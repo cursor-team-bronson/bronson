@@ -1,4 +1,5 @@
 import yaml from "js-yaml";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   JobConfigSchema,
   type AgentRunResult,
@@ -24,6 +25,98 @@ function logErr(scope: string, err: unknown) {
   console.error(`[supabase] ${scope}`, err);
 }
 
+/** Canonical stored description: empty / whitespace-only YAML is stored as NULL. */
+function normalizeWorkflowDescription(rawYaml?: string): string | null {
+  const t = rawYaml?.trim();
+  return t ? t : null;
+}
+
+/**
+ * Reuse a workflow row when name + description match AND every job has an identical `steps` row.
+ * Otherwise insert a new workflow and steps (catalog lists one row per logical name via dedupe).
+ */
+async function resolveWorkflowAndStepIds(
+  sb: SupabaseClient,
+  config: WorkflowConfig,
+  rawYaml?: string,
+): Promise<{ workflowId: string; stepIdByJobId: Record<string, string> } | null> {
+  const desc = normalizeWorkflowDescription(rawYaml);
+
+  let wfQuery = sb.from("workflows").select("id").eq("name", config.name);
+  if (desc === null) wfQuery = wfQuery.is("description", null);
+  else wfQuery = wfQuery.eq("description", desc);
+
+  const { data: matchedWf } = await wfQuery.maybeSingle();
+
+  if (matchedWf?.id) {
+    const wfId = matchedWf.id as string;
+    const { data: stepRows, error: stErr } = await sb
+      .from("steps")
+      .select("id, name, yaml_config")
+      .eq("workflow_id", wfId);
+
+    if (!stErr && stepRows?.length) {
+      const stepIdByJobId: Record<string, string> = {};
+      let reuseOk = true;
+      for (const jobId of Object.keys(config.jobs)) {
+        const row = stepRows.find(r => r.name === jobId);
+        const wantYaml = yaml.dump(config.jobs[jobId]);
+        if (!row || row.yaml_config !== wantYaml) {
+          reuseOk = false;
+          break;
+        }
+        stepIdByJobId[jobId] = row.id as string;
+      }
+      if (reuseOk && Object.keys(stepIdByJobId).length === Object.keys(config.jobs).length) {
+        const { error: touchErr } = await sb
+          .from("workflows")
+          .update({ updated_at: new Date().toISOString() })
+          .eq("id", wfId);
+        if (touchErr) logErr("workflows.touch", touchErr);
+        return { workflowId: wfId, stepIdByJobId };
+      }
+    }
+  }
+
+  const { data: wf, error: wfErr } = await sb
+    .from("workflows")
+    .insert({
+      name: config.name,
+      description: desc,
+    })
+    .select("id")
+    .single();
+
+  if (wfErr || !wf) {
+    logErr("workflows.insert", wfErr);
+    return null;
+  }
+
+  const workflowId = wf.id as string;
+
+  const stepRows = Object.entries(config.jobs).map(([name, job]) => ({
+    workflow_id: workflowId,
+    name,
+    yaml_config: yaml.dump(job),
+    depends_on: job.depends_on ?? [],
+    context_budget: job.context_budget,
+  }));
+
+  const { data: insertedSteps, error: stepErr } = await sb.from("steps").insert(stepRows).select("id, name");
+
+  if (stepErr || !insertedSteps?.length) {
+    logErr("steps.insert", stepErr);
+    return null;
+  }
+
+  const stepIdByJobId: Record<string, string> = {};
+  for (const row of insertedSteps) {
+    stepIdByJobId[row.name as string] = row.id as string;
+  }
+
+  return { workflowId, stepIdByJobId };
+}
+
 export async function persistBeginRun(params: {
   runId: string;
   config: WorkflowConfig;
@@ -35,41 +128,10 @@ export async function persistBeginRun(params: {
   const { runId, config, rawYaml } = params;
 
   try {
-    const { data: wf, error: wfErr } = await sb
-      .from("workflows")
-      .insert({
-        name: config.name,
-        description: rawYaml ?? null,
-      })
-      .select("id")
-      .single();
+    const resolved = await resolveWorkflowAndStepIds(sb, config, rawYaml);
+    if (!resolved) return;
 
-    if (wfErr || !wf) {
-      logErr("workflows.insert", wfErr);
-      return;
-    }
-
-    const workflowId = wf.id as string;
-
-    const stepRows = Object.entries(config.jobs).map(([name, job]) => ({
-      workflow_id: workflowId,
-      name,
-      yaml_config: yaml.dump(job),
-      depends_on: job.depends_on ?? [],
-      context_budget: job.context_budget,
-    }));
-
-    const { data: insertedSteps, error: stepErr } = await sb.from("steps").insert(stepRows).select("id, name");
-
-    if (stepErr || !insertedSteps?.length) {
-      logErr("steps.insert", stepErr);
-      return;
-    }
-
-    const stepIdByJobId: Record<string, string> = {};
-    for (const row of insertedSteps) {
-      stepIdByJobId[row.name as string] = row.id as string;
-    }
+    const { workflowId, stepIdByJobId } = resolved;
 
     const { error: wrErr } = await sb.from("workflow_runs").insert({
       id: runId,
@@ -126,12 +188,52 @@ async function patchStepRun(runId: string, jobId: string, patch: Record<string, 
   if (error) logErr(`step_runs.update(${jobId})`, error);
 }
 
+/** Gate / concurrency: only apply patch when `step_runs.status` is one of `allowedCurrent`. */
+async function patchStepRunWhenStatus(
+  runId: string,
+  jobId: string,
+  patch: Record<string, unknown>,
+  allowedCurrent: string[],
+): Promise<boolean> {
+  const ctx = ctxByRunId.get(runId);
+  const sb = getSupabase();
+  if (!sb || !ctx) return false;
+  const stepRunId = ctx.stepRunIdByJobId[jobId];
+  if (!stepRunId) return false;
+
+  const { data, error } = await sb
+    .from("step_runs")
+    .update(patch)
+    .eq("id", stepRunId)
+    .in("status", allowedCurrent)
+    .select("id");
+
+  if (error) {
+    logErr(`step_runs.update(${jobId})`, error);
+    return false;
+  }
+  if (!data?.length) {
+    console.warn(
+      `[supabase] step_runs stale gate transition skipped (${jobId}): expected status ∈ [${allowedCurrent.join(", ")}]`,
+    );
+    return false;
+  }
+  return true;
+}
+
 export async function persistWorkflowRunStatus(runId: string, status: string) {
   await patchWorkflowRun(runId, { status });
 }
 
 export async function persistWorkflowRunTerminal(runId: string, status: string, completedAt: string) {
-  await patchWorkflowRun(runId, { status, completed_at: completedAt });
+  const sb = getSupabase();
+  if (!sb) return;
+  const { error } = await sb
+    .from("workflow_runs")
+    .update({ status, completed_at: completedAt })
+    .eq("id", runId);
+  if (error) logErr("workflow_runs.update", error);
+  else ctxByRunId.delete(runId);
 }
 
 export async function persistStepRunning(
@@ -147,22 +249,32 @@ export async function persistStepRunning(
 }
 
 export async function persistStepGatePending(runId: string, jobId: string, proposedOutput: string) {
-  await patchStepRun(runId, jobId, {
-    status: "gate_pending",
-    output_data: { proposedOutput, gate: "pending" },
-  });
+  await patchStepRunWhenStatus(
+    runId,
+    jobId,
+    {
+      status: "gate_pending",
+      output_data: { proposedOutput, gate: "pending" },
+    },
+    ["running"],
+  );
 }
 
 export async function persistStepGateApproved(runId: string, jobId: string) {
-  await patchStepRun(runId, jobId, { status: "gate_approved" });
+  await patchStepRunWhenStatus(runId, jobId, { status: "gate_approved" }, ["gate_pending"]);
 }
 
 export async function persistStepGateRejected(runId: string, jobId: string, reason?: string) {
-  await patchStepRun(runId, jobId, {
-    status: "failed",
-    error_message: reason ?? "Gate rejected",
-    completed_at: new Date().toISOString(),
-  });
+  await patchStepRunWhenStatus(
+    runId,
+    jobId,
+    {
+      status: "failed",
+      error_message: reason ?? "Gate rejected",
+      completed_at: new Date().toISOString(),
+    },
+    ["gate_pending"],
+  );
 }
 
 export async function persistStepRetry(
@@ -434,24 +546,36 @@ export async function listWorkflowsFromDb(limit = 50): Promise<
   if (!sb) return [];
 
   const lim = Math.min(100, Math.max(1, limit));
+  const fetchCap = Math.min(500, lim * 20);
   const { data, error } = await sb
     .from("workflows")
     .select("id, name, description, created_at, updated_at")
     .order("updated_at", { ascending: false })
-    .limit(lim);
+    .limit(fetchCap);
 
   if (error || !data) {
     logErr("workflows.list", error);
     return [];
   }
 
-  return data as Array<{
+  const rows = data as Array<{
     id: string;
     name: string;
     description: string | null;
     created_at: string;
     updated_at: string;
   }>;
+
+  const seen = new Set<string>();
+  const deduped: typeof rows = [];
+  for (const row of rows) {
+    if (seen.has(row.name)) continue;
+    seen.add(row.name);
+    deduped.push(row);
+    if (deduped.length >= lim) break;
+  }
+
+  return deduped;
 }
 
 export async function getWorkflowWithSteps(workflowId: string): Promise<{

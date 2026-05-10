@@ -20,13 +20,26 @@ The Next.js app can keep `NEXT_PUBLIC_*` for browser Supabase usage; the orchest
 
 Align your Supabase schema with the DDL you are using. The code assumes:
 
-- **`workflows`** — blueprint (`name`, optional `description`; we store the submitted YAML in `description` when present).
+- **`workflows`** — blueprint (`name`, optional `description`; we store the submitted YAML in `description` when present, trimmed; blank YAML is stored as SQL `NULL`).
 - **`steps`** — one row per job/node (`workflow_id`, `name`, `yaml_config`, `depends_on` text array, `context_budget`).
 - **`workflow_runs`** — one row per execution (`id` set to the orchestrator run UUID, `workflow_id`, `status`, timestamps).
 - **`step_runs`** — one row per step per run (`run_id`, `step_id`, `status`, `input_context`, `output_data`, `retry_count`, `error_message`, timestamps). Status values used include `pending`, `running`, `gate_pending`, `gate_approved`, `completed`, `failed`.
 - **`usage_metrics`** — one row per successful LLM completion (`step_run_id`, `model_name`, token counts, `cost_usd`).
 
 Indexes on `step_runs(run_id)` and `usage_metrics(step_run_id)` match your design.
+
+### Workflow reuse and catalog
+
+- Before inserting a workflow, the orchestrator looks for an existing row with the same **`name`** and **`description`** (canonical YAML string). If every job’s **`steps.yaml_config`** still matches the current job definition, that workflow (and its step IDs) are **reused** for the new run.
+- If the YAML or any job definition changed, a **new** `workflows` row is inserted (same display name allowed). **`GET /api/catalog/workflows`** deduplicates by **`name`**, returning the **most recently updated** row per name so the catalog stays readable without a DB unique constraint.
+
+### Gate checkpoints
+
+Human-gate updates use **conditional `UPDATE`s**: pending approval/rejection only applies when `step_runs.status` is already **`gate_pending`**; entering `gate_pending` only applies when status is **`running`**. Conflicting concurrent updates affect **zero rows** and are logged (no silent overwrite).
+
+### In-memory context
+
+Per-run persistence metadata is dropped when the **`workflow_runs`** row reaches a **terminal** status (`completed` / `failed`) so long-lived processes do not grow `ctxByRunId` without bound.
 
 ## Row Level Security
 
