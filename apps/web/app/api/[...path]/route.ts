@@ -1,10 +1,27 @@
 import type { NextRequest } from "next/server";
+import { Agent } from "undici";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+/** Undici defaults ~300s body read — long essay runs kill SSE; disable timeouts for run event streams. */
+const sseUpstreamAgent = new Agent({
+  headersTimeout: 0,
+  bodyTimeout: 0,
+  keepAliveTimeout: 600_000,
+  keepAliveMaxTimeout: 600_000,
+});
+
 function orchestratorBase(): string {
   return (process.env.ORCHESTRATOR_URL ?? "http://127.0.0.1:3001").replace(/\/$/, "");
+}
+
+function isRunEventsSse(req: NextRequest, pathSegments: string[]): boolean {
+  return (
+    req.method === "GET" &&
+    pathSegments.length >= 3 &&
+    pathSegments[pathSegments.length - 1] === "events"
+  );
 }
 
 async function proxy(req: NextRequest, pathSegments: string[]): Promise<Response> {
@@ -20,7 +37,13 @@ async function proxy(req: NextRequest, pathSegments: string[]): Promise<Response
     body = await req.arrayBuffer();
   }
 
-  const upstream = await fetch(target, { method: req.method, headers, body });
+  const sse = isRunEventsSse(req, pathSegments);
+  const upstream = await fetch(target, {
+    method: req.method,
+    headers,
+    body,
+    ...(sse ? { dispatcher: sseUpstreamAgent } : {}),
+  });
   return new Response(upstream.body, {
     status: upstream.status,
     statusText: upstream.statusText,

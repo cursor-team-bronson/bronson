@@ -76,6 +76,17 @@ export default function RunPage() {
   const [jobErrors, setJobErrors] = useState<Record<string, string>>({});
   const abortRef = useRef(false);
   const eventSourceRef = useRef<EventSource | null>(null);
+  /** Fallback while SSE can drop (proxy timeouts); cleared when run reaches a terminal state or Stop. */
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const clearPoll = useCallback(() => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => () => clearPoll(), [clearPoll]);
 
   const loadFromStorage = useCallback(() => {
     try {
@@ -121,10 +132,11 @@ export default function RunPage() {
 
   const stop = useCallback(() => {
     abortRef.current = true;
+    clearPoll();
     eventSourceRef.current?.close();
     eventSourceRef.current = null;
     setIsRunning(false);
-  }, []);
+  }, [clearPoll]);
 
   const run = useCallback(async () => {
     if (!runnable || isRunning) return;
@@ -184,6 +196,7 @@ export default function RunPage() {
           return next;
         });
         if (runState.status === "completed" || runState.status === "failed") {
+          clearPoll();
           setIsRunning(false);
           eventSourceRef.current?.close();
           eventSourceRef.current = null;
@@ -193,9 +206,13 @@ export default function RunPage() {
       }
     };
 
+    clearPoll();
+    pollRef.current = setInterval(() => void syncFromServer(), 4000);
+
     await syncFromServer();
 
     if (abortRef.current) {
+      clearPoll();
       setIsRunning(false);
       return;
     }
@@ -226,7 +243,7 @@ export default function RunPage() {
         if (evt.type === "RUN_COMPLETED" || evt.type === "RUN_FAILED") {
           es.close();
           if (eventSourceRef.current === es) eventSourceRef.current = null;
-          setIsRunning(false);
+          void syncFromServer();
         }
       } catch {
         /* ignore */
@@ -237,9 +254,8 @@ export default function RunPage() {
       es.close();
       if (eventSourceRef.current === es) eventSourceRef.current = null;
       if (!abortRef.current) void syncFromServer();
-      setIsRunning(false);
     };
-  }, [graph.nodes, isRunning, runnable, yamlText]);
+  }, [clearPoll, graph.nodes, isRunning, runnable, yamlText]);
 
   return (
     <main className="mx-auto flex min-h-0 w-full max-w-7xl flex-1 flex-col gap-8 px-5 py-8 sm:px-8 lg:py-12">
@@ -251,8 +267,9 @@ export default function RunPage() {
           <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground">
             Posts this workflow to the Bronson orchestrator (<code className="rounded bg-muted px-1 py-0.5 text-xs">POST /api/runs</code>
             ), which runs jobs through CLōD in DAG waves. Use <strong className="font-medium text-foreground">Load essay test</strong> for the 3-cycle writer/reviewer
-            flow (requires <code className="text-xs">ALLOW_SHELL_TOOL=true</code> and <code className="text-xs">TOOL_SHELL_CWD</code> in the orchestrator — see example
-            header in <code className="text-xs">examples/essay-write-review-3cycles.yaml</code>). Or use <strong className="font-medium text-foreground">jobs:</strong> /{" "}
+            flow (requires <code className="text-xs">TOOL_SHELL_CWD</code> and either <code className="text-xs">ALLOW_SHELL_TOOL=true</code> or{" "}
+            <code className="text-xs">ALLOW_WORKSPACE_WRITE=true</code> — see <code className="text-xs">examples/essay-write-review-3cycles.yaml</code>). Or use{" "}
+            <strong className="font-medium text-foreground">jobs:</strong> /{" "}
             <strong className="font-medium text-foreground">steps:</strong> from the DAG editor. Orchestrator on port 3001; set <code className="text-xs">ORCHESTRATOR_URL</code> for the web app if needed.
           </p>
         </div>
@@ -329,11 +346,17 @@ export default function RunPage() {
                 <code className="rounded bg-muted px-1">apps/orchestrator/.env</code>.
               </li>
               <li>
-                Essay / shell: set <code className="rounded bg-muted px-1">ALLOW_SHELL_TOOL=true</code>,{" "}
-                <code className="rounded bg-muted px-1">TOOL_SHELL_CWD</code> to your essay folder (must match paths in the YAML / essay preset), and relax{" "}
+                Essay preset: set <code className="rounded bg-muted px-1">TOOL_SHELL_CWD</code> and{" "}
+                <code className="rounded bg-muted px-1">ALLOW_SHELL_TOOL=true</code> (or{" "}
+                <code className="rounded bg-muted px-1">ALLOW_WORKSPACE_WRITE=true</code> without shell). Writers use{" "}
+                <code className="rounded bg-muted px-1">workspace_write</code> — no shell quoting. For raw shell jobs, relax{" "}
                 <code className="rounded bg-muted px-1">TOOL_SHELL_ALLOWLIST_REGEX</code> if commands are blocked.
               </li>
               <li>Orchestrator must be running on port 3001 (or set web <code className="rounded bg-muted px-1">ORCHESTRATOR_URL</code>).</li>
+              <li>
+                Live UI updates use SSE plus a 4s poll until the run finishes — refresh if something looks stuck with long shell/tool loops (
+                <code className="rounded bg-muted px-1">tool_rounds_max</code>).
+              </li>
             </ul>
           </div>
         </div>

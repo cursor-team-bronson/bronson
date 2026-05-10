@@ -40,28 +40,29 @@ steps:
 `;
 
 /**
- * Mirrors `examples/essay-write-review-3cycles.yaml` — keep in sync manually (POC).
- * Uses String.raw so Windows paths stay single-backslash in the YAML text.
+ * Mirrors `examples/essay-write-review-3cycles.yaml` — run `node scripts/sync-essay-preset.mjs` after edits there (POC).
+ * Uses String.raw so Windows paths stay single-backslash in the YAML text (avoid backticks inside the YAML).
  */
 export const essayWorkflowYaml = String.raw`# Essay writer / reviewer — three cycles (six sequential jobs).
 #
-# Each job uses on_failure: retry so the DAG keeps going after a failure; downstream jobs receive
-# failure transcripts from upstream via context.
+# Each job uses on_failure: retry so the DAG keeps going after a failure; downstream jobs then
+# receive failure transcripts from upstream via context (see orchestrator run-manager + event log).
 #
 # Prerequisites (apps/orchestrator/.env):
 #   ALLOW_SHELL_TOOL=true
+#     (enables workspace_write by default — see ALLOW_WORKSPACE_WRITE below)
 #   TOOL_SHELL_CWD=C:\Users\julie\bronson\examples\essay-workspace
-#     (must match the folder below if you change paths)
+#     (workspace root for workspace_write; must match paths you care about)
 #
-# Optional allowlist (PowerShell commands for writing files); examples:
-#   TOOL_SHELL_ALLOWLIST_REGEX=^powershell
-#   or broader (dev only): TOOL_SHELL_ALLOWLIST_REGEX=.*
+# Optional:
+#   ALLOW_WORKSPACE_WRITE=false   — disable direct file writes while keeping shell (default: same as ALLOW_SHELL_TOOL)
+#   TOOL_WORKSPACE_WRITE_MAX_BYTES=5000000
 #
+# Writers use tools: [workspace_write] so file contents are passed as tool JSON (no shell quoting).
 # Reviewers only see prior jobs' LLM outputs (context), not the disk file automatically.
-# Each writer must paste the full essay in its assistant reply so reviewers can react.
 #
 # Edit C:\Users\julie\bronson\examples\essay-workspace if you want a different folder;
-# keep TOOL_SHELL_CWD and shell paths in sync.
+# keep TOOL_SHELL_CWD in sync.
 
 name: essay-write-review-3cycles
 
@@ -78,16 +79,13 @@ jobs:
         ###ESSAY_START###
         ...full essay text...
         ###ESSAY_END###
-      - Then invoke the shell tool exactly once. Save the same essay text to disk under the
-        working directory (TOOL_SHELL_CWD), file name essay-draft.txt only, using PowerShell.
-        Example shape (you must substitute the real essay body; double any single quote inside the essay):
-        powershell -NoProfile -Command "$t = @'
-        YOUR ESSAY TEXT HERE
-        '@; Set-Content -LiteralPath 'C:\Users\julie\bronson\examples\essay-workspace\essay-draft.txt' -Value $t -Encoding utf8"
-      - End your reply after the shell tool result with the single word: done
-      - Use at most one shell tool call per attempt; avoid extra tool rounds.
-    tools: [shell]
-    tool_rounds_max: 32
+      - Call workspace_write exactly once:
+        - path: essay-draft.txt
+        - content: the essay body ONLY (characters between ###ESSAY_START### and ###ESSAY_END###, excluding the marker lines themselves).
+      - Then reply with one assistant message containing only the word: done
+      - Do not use the shell tool unless workspace_write fails (you should not need it).
+    tools: [workspace_write]
+    tool_rounds_max: 18
     gate: auto
     on_failure: retry
     context_budget: 12000
@@ -98,13 +96,17 @@ jobs:
 
       Read the section ###ESSAY_START### ... ###ESSAY_END### from the writer output in context.
 
-      Respond with:
+      If the upstream writer FAILED (see "### Upstream ... failed") or there is no ###ESSAY_START###
+      block, respond only: "No essay draft to review." plus one line quoting the failure reason.
+      Do not invent an essay or unrelated topic.
+
+      Otherwise respond with:
       1) Summary (2–3 sentences)
       2) Strengths (bullet list)
       3) Issues / gaps (bullet list)
       4) Concrete edits the writer should apply in the next draft (numbered list)
 
-      Do not use the shell tool.
+      Do not use tools.
     depends_on: [write_cycle_1]
     gate: auto
     on_failure: retry
@@ -121,13 +123,10 @@ jobs:
 
       Rules:
       - Output the full revised essay between ###ESSAY_START### and ###ESSAY_END###.
-      - Invoke the shell tool exactly once to overwrite:
-        C:\Users\julie\bronson\examples\essay-workspace\essay-draft.txt
-        with the same revised essay (PowerShell Set-Content pattern as in cycle 1).
-      - End with: done
-      - Use at most one shell tool call per attempt.
-    tools: [shell]
-    tool_rounds_max: 32
+      - workspace_write once: path essay-draft.txt, content = essay body only (between markers, markers excluded).
+      - Then reply with only: done
+    tools: [workspace_write]
+    tool_rounds_max: 18
     depends_on: [review_cycle_1]
     gate: auto
     on_failure: retry
@@ -139,10 +138,13 @@ jobs:
 
       Read the latest essay between ###ESSAY_START### and ###ESSAY_END### in context.
 
-      Same four sections as before (summary, strengths, issues, concrete edits for next draft).
+      If the upstream writer FAILED or there is no ###ESSAY_START### block, respond only:
+      "No essay draft to review." plus one line quoting the failure reason. Do not invent content.
+
+      Otherwise same four sections as before (summary, strengths, issues, concrete edits for next draft).
       Be stricter about clarity and structure if earlier issues remain.
 
-      Do not use the shell tool.
+      Do not use tools.
     depends_on: [write_cycle_2]
     gate: auto
     on_failure: retry
@@ -156,13 +158,10 @@ jobs:
 
       Rules:
       - Final essay between ###ESSAY_START### and ###ESSAY_END###.
-      - Shell tool once: overwrite
-        C:\Users\julie\bronson\examples\essay-workspace\essay-draft.txt
-        with the final essay (same PowerShell pattern).
-      - End with: done
-      - Use at most one shell tool call per attempt.
-    tools: [shell]
-    tool_rounds_max: 32
+      - workspace_write once: path essay-draft.txt, content = essay body only.
+      - Then reply with only: done
+    tools: [workspace_write]
+    tool_rounds_max: 18
     depends_on: [review_cycle_2]
     gate: auto
     on_failure: retry
@@ -172,10 +171,14 @@ jobs:
     prompt: |
       You are the REVIEWER (final pass).
 
-      Read the final essay from context. Give a brief acceptance-style summary: ready or not,
-      top remaining nitpicks (if any), and one sentence overall verdict.
+      Read the final essay from context (###ESSAY_START### ... ###ESSAY_END###).
 
-      Do not use the shell tool.
+      If the upstream writer FAILED or there is no essay in context, say so in one short paragraph — do not invent an essay.
+
+      Otherwise give a brief acceptance-style summary: ready or not, top remaining nitpicks (if any),
+      and one sentence overall verdict.
+
+      Do not use tools.
     depends_on: [write_cycle_3]
     gate: auto
     on_failure: retry
