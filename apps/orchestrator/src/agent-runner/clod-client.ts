@@ -18,10 +18,14 @@ function formatClodRequestError(err: unknown): string {
     if (body && typeof body === "object" && typeof body.message === "string" && body.message !== err.message) {
       bits.push(body.message);
     }
+    if (err.code) bits.push(`code=${err.code}`);
+    if (err.type) bits.push(`type=${err.type}`);
+    if (err.param) bits.push(`param=${err.param}`);
+    if (err.request_id) bits.push(`request_id=${err.request_id}`);
     let s = bits.filter(Boolean).join(" — ");
     if (err.status === 403) {
       s +=
-        " — Check CLOD_API_KEY, DEFAULT_AGENT_MODEL (model slug allowed on your plan), and CLōD dashboard access.";
+        " — Check CLOD_API_KEY, DEFAULT_AGENT_MODEL (exact catalog id, e.g. DeepSeek V3), project key scope on app.clod.io.";
     }
     return s;
   }

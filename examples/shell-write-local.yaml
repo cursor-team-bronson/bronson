@@ -9,10 +9,12 @@ name: shell-write-local
 jobs:
   write_proof:
     prompt: |
+      write a poem about hello world as the best computerscience idea then
       Invoke the shell tool exactly once.
-      Use this exact command string for the tool argument "command" (copy verbatim, one line):
 
-      cmd /c echo bronson-shell-proof>bronson-shell-proof.txt
+      Use this command string for the tool argument "command" (copy with poem, one line):
+
+      cmd /c echo [poem goes here]>bronson-shell-proof.txt
 
       Then reply with the single word: ok
     tools: [shell]

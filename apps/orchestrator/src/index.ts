@@ -1,43 +1,8 @@
-import fs from "fs";
-import path from "path";
-import { config as loadEnv } from "dotenv";
+import { loadedEnvPaths } from "./bootstrap-env.js";
 import express from "express";
 import cors from "cors";
 import { router } from "./api/routes.js";
 import { assertClodConfigured } from "./agent-runner/clod-client.js";
-
-/**
- * Load multiple `.env` files so package-local settings override repo root.
- * Previously we stopped at the first existing file, so `bronson/.env` hid
- * `apps/orchestrator/.env` and left CLōD keys unset or stale.
- */
-function loadMergedEnv(): string[] {
-  const cwd = process.cwd();
-  const ordered: string[] =
-    path.basename(cwd) === "orchestrator"
-      ? [path.join(cwd, "..", "..", ".env"), path.join(cwd, ".env")]
-      : [path.join(cwd, ".env"), path.join(cwd, "apps", "orchestrator", ".env")];
-
-  const loaded: string[] = [];
-  const seen = new Set<string>();
-
-  for (const p of ordered) {
-    const abs = path.resolve(p);
-    if (seen.has(abs)) continue;
-    if (!fs.existsSync(abs)) continue;
-    seen.add(abs);
-    loadEnv({ path: abs, override: true });
-    loaded.push(abs);
-  }
-
-  if (loaded.length === 0) {
-    loadEnv();
-  }
-
-  return loaded;
-}
-
-const loadedEnvPaths = loadMergedEnv();
 assertClodConfigured();
 
 const modelFromEnv =

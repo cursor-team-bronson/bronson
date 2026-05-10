@@ -27,7 +27,7 @@ npm run build -w @bronson/types
 
 Environment files:
 
-1. **Orchestrator** — Set `CLOD_API_KEY` in either the repo root `.env` or `apps/orchestrator/.env` (the server loads the first file that exists). Set **`DEFAULT_AGENT_MODEL`** (or `CLOD_DEFAULT_MODEL`) to your provider’s **exact** model string whenever jobs omit `model:` in YAML — for CLōD copy the id from their docs (e.g. **`DEFAULT_AGENT_MODEL="DeepSeek V3"`**, see `apps/orchestrator/.env.example`). You can start from `apps/orchestrator/.env.example`.
+1. **Orchestrator** — Set `CLOD_API_KEY` in either the repo root `.env` or `apps/orchestrator/.env` (repo-root `.env` loads first; `apps/orchestrator/.env` overrides duplicate keys). Set **`DEFAULT_AGENT_MODEL`** (or `CLOD_DEFAULT_MODEL`) to your provider’s **exact** model string whenever jobs omit `model:` in YAML — for CLōD copy the id from their docs (e.g. **`DEFAULT_AGENT_MODEL="DeepSeek V3"`**, see `apps/orchestrator/.env.example`). You can start from `apps/orchestrator/.env.example`.
 2. **Web (optional)** — `cp apps/web/.env.example apps/web/.env` if you change defaults (`ORCHESTRATOR_URL`, `NEXT_PUBLIC_ORCHESTRATOR_URL`).
 
 ## Development
