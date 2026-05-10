@@ -38,10 +38,18 @@ export function assertClodConfigured(): void {
   }
 }
 
+function formatPriorAttempts(errors: string[]): string {
+  const lines = errors.map((e, i) => `${i + 1}. ${e}`);
+  return `### Prior attempts on this job (learn from these errors)\n${lines.join("\n")}`;
+}
+
 export async function runAgent(runId: string, options: AgentRunOptions, upstreamOutputs: Record<string, string>): Promise<AgentRunResult> {
-  const { jobId, jobConfig } = options;
-  const contextSection = buildJobContext(upstreamOutputs, jobConfig.context_budget);
-  const userMessage = contextSection ? `${contextSection}\n\n---\n\n${jobConfig.prompt}` : jobConfig.prompt;
+  const { jobId, jobConfig, priorAttemptErrors, upstreamKind } = options;
+  const contextSection = buildJobContext(upstreamOutputs, jobConfig.context_budget, upstreamKind);
+  const attemptSection =
+    priorAttemptErrors && priorAttemptErrors.length > 0 ? `${formatPriorAttempts(priorAttemptErrors)}\n\n---\n\n` : "";
+  const body = contextSection ? `${contextSection}\n\n---\n\n${jobConfig.prompt}` : jobConfig.prompt;
+  const userMessage = attemptSection ? `${attemptSection}${body}` : body;
 
   eventLog.append(runId, "JOB_STARTED", jobId);
 
@@ -116,5 +124,8 @@ export async function runAgent(runId: string, options: AgentRunOptions, upstream
     }
   }
 
-  throw new Error(`Tool / assistant loop exceeded tool_rounds_max (${maxRounds})`);
+  throw new Error(
+    `Tool / assistant loop exceeded tool_rounds_max (${maxRounds}). ` +
+      `Raise tool_rounds_max on this job in YAML (shell-heavy jobs often need 24–32).`,
+  );
 }

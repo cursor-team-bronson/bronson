@@ -64,8 +64,16 @@ export interface GateRequest {
 export interface GateDecision {
   approved: boolean; editedOutput?: string; reason?: string;
 }
+export type UpstreamKind = "completed" | "failed";
+
 export interface AgentRunOptions {
-  jobId: string; jobConfig: JobConfig; contextInput: string;
+  jobId: string;
+  jobConfig: JobConfig;
+  contextInput: string;
+  /** Populated on retries: errors from earlier attempts of this same job (passed into the model prompt). */
+  priorAttemptErrors?: string[];
+  /** Per dependency: successful output vs failure transcript from event log. */
+  upstreamKind?: Record<string, UpstreamKind>;
 }
 export interface AgentRunResult {
   output: string; tokensUsed: number; costUsd: number;

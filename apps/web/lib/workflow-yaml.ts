@@ -45,6 +45,9 @@ steps:
  */
 export const essayWorkflowYaml = String.raw`# Essay writer / reviewer — three cycles (six sequential jobs).
 #
+# Each job uses on_failure: retry so the DAG keeps going after a failure; downstream jobs receive
+# failure transcripts from upstream via context.
+#
 # Prerequisites (apps/orchestrator/.env):
 #   ALLOW_SHELL_TOOL=true
 #   TOOL_SHELL_CWD=C:\Users\julie\bronson\examples\essay-workspace
@@ -82,9 +85,11 @@ jobs:
         YOUR ESSAY TEXT HERE
         '@; Set-Content -LiteralPath 'C:\Users\julie\bronson\examples\essay-workspace\essay-draft.txt' -Value $t -Encoding utf8"
       - End your reply after the shell tool result with the single word: done
+      - Use at most one shell tool call per attempt; avoid extra tool rounds.
     tools: [shell]
-    tool_rounds_max: 12
+    tool_rounds_max: 32
     gate: auto
+    on_failure: retry
     context_budget: 12000
 
   review_cycle_1:
@@ -102,6 +107,7 @@ jobs:
       Do not use the shell tool.
     depends_on: [write_cycle_1]
     gate: auto
+    on_failure: retry
     context_budget: 12000
 
   write_cycle_2:
@@ -119,10 +125,12 @@ jobs:
         C:\Users\julie\bronson\examples\essay-workspace\essay-draft.txt
         with the same revised essay (PowerShell Set-Content pattern as in cycle 1).
       - End with: done
+      - Use at most one shell tool call per attempt.
     tools: [shell]
-    tool_rounds_max: 12
+    tool_rounds_max: 32
     depends_on: [review_cycle_1]
     gate: auto
+    on_failure: retry
     context_budget: 12000
 
   review_cycle_2:
@@ -137,6 +145,7 @@ jobs:
       Do not use the shell tool.
     depends_on: [write_cycle_2]
     gate: auto
+    on_failure: retry
     context_budget: 12000
 
   write_cycle_3:
@@ -151,10 +160,12 @@ jobs:
         C:\Users\julie\bronson\examples\essay-workspace\essay-draft.txt
         with the final essay (same PowerShell pattern).
       - End with: done
+      - Use at most one shell tool call per attempt.
     tools: [shell]
-    tool_rounds_max: 12
+    tool_rounds_max: 32
     depends_on: [review_cycle_2]
     gate: auto
+    on_failure: retry
     context_budget: 12000
 
   review_cycle_3:
@@ -167,6 +178,7 @@ jobs:
       Do not use the shell tool.
     depends_on: [write_cycle_3]
     gate: auto
+    on_failure: retry
     context_budget: 12000
 `;
 

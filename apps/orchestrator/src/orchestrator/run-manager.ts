@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from "uuid";
-import { WorkflowConfig, RunState, JobState, SerializedDAG } from "@bronson/types";
+import { WorkflowConfig, RunState, JobState, SerializedDAG, UpstreamKind } from "@bronson/types";
 import { resolveDAG } from "../parser/dag-resolver.js";
 import { eventLog, VersionMismatchError } from "../event-log/event-log.js";
 import { gateManager } from "../gates/gate-manager.js";
@@ -10,6 +10,28 @@ const runs = new Map<string, RunState>();
 export const getRun = (runId: string) => runs.get(runId);
 export const getRunDag = (runId: string) => getRun(runId)?.dag;
 export const listRuns = () => [...runs.values()];
+
+function gatherUpstreamPayload(
+  runId: string,
+  deps: string[],
+): { outputs: Record<string, string>; kinds: Record<string, UpstreamKind> } {
+  const outputs: Record<string, string> = {};
+  const kinds: Record<string, UpstreamKind> = {};
+  for (const dep of deps) {
+    const success = eventLog.getJobOutput(runId, dep);
+    if (success !== undefined) {
+      outputs[dep] = success;
+      kinds[dep] = "completed";
+      continue;
+    }
+    const failed = eventLog.getFailureContextForJob(runId, dep);
+    if (failed !== undefined) {
+      outputs[dep] = failed;
+      kinds[dep] = "failed";
+    }
+  }
+  return { outputs, kinds };
+}
 
 function appendGateEvent(
   runId: string,
@@ -98,18 +120,29 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
   const jobState = run.jobs[jobId];
   const maxAttempts = 1 + (jobConfig.max_retries ?? 0);
 
+  const priorAttemptErrors: string[] = [];
+
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     jobState.status = "running";
     jobState.startedAt = new Date().toISOString();
-    
-    const upstreamOutputs: Record<string, string> = {};
-    for (const dep of jobConfig.depends_on ?? []) {
-      const out = eventLog.getJobOutput(run.runId, dep);
-      if (out) upstreamOutputs[dep] = out;
-    }
+
+    const { outputs: upstreamOutputs, kinds: upstreamKind } = gatherUpstreamPayload(
+      run.runId,
+      jobConfig.depends_on ?? [],
+    );
 
     try {
-      const result = await runAgent(run.runId, { jobId, jobConfig, contextInput: "" }, upstreamOutputs);
+      const result = await runAgent(
+        run.runId,
+        {
+          jobId,
+          jobConfig,
+          contextInput: "",
+          priorAttemptErrors: priorAttemptErrors.length > 0 ? [...priorAttemptErrors] : undefined,
+          upstreamKind: Object.keys(upstreamKind).length > 0 ? upstreamKind : undefined,
+        },
+        upstreamOutputs,
+      );
       let finalOutput = result.output;
       
       if (jobConfig.gate === "human") {
@@ -149,22 +182,24 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
       return;
 
     } catch (err) {
+      const msg = String(err);
       jobState.retryCount = attempt;
+      priorAttemptErrors.push(`Attempt ${attempt}: ${msg}`);
       if (attempt < maxAttempts) {
         const delayMs = 500 * Math.pow(2, attempt - 1);
 
-        eventLog.append(run.runId, "JOB_RETRY_WARNING", jobId, { 
-          attempt, 
-          maxAttempts, 
-          reason: String(err), 
-          nextRetryDelayMs: delayMs 
+        eventLog.append(run.runId, "JOB_RETRY_WARNING", jobId, {
+          attempt,
+          maxAttempts,
+          reason: msg,
+          nextRetryDelayMs: delayMs,
         });
-        
+
         await new Promise(r => setTimeout(r, delayMs));
       } else {
-        jobState.status = "failed"; 
-        jobState.error = String(err);
-        eventLog.append(run.runId, "JOB_FAILED", jobId, { error: String(err) });
+        jobState.status = "failed";
+        jobState.error = msg;
+        eventLog.append(run.runId, "JOB_FAILED", jobId, { error: msg });
       }
     }
   }
