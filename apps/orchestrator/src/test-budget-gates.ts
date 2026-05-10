@@ -149,22 +149,48 @@ await test("listAwaiting returns clean DTOs without internal state", async () =>
   }
 
   // Clean up
-  budgetTracker.topUp("r7", "j1", 1);
-  budgetTracker.topUp("r7", "j2", 1);
+  budgetTracker.topUp("r7", "j1", 1, "cleanup-r7-j1");
+  budgetTracker.topUp("r7", "j2", 1, "cleanup-r7-j2");
   await Promise.all([p1, p2]);
 });
 
-await test("duplicate topUp is idempotent", async () => {
+await test("duplicate topUp with same intentId is idempotent", async () => {
   budgetTracker.register("r8", "j1", 0.01);
   try { await budgetTracker.deduct("r8", "j1", 0.02); } catch {}
 
-  budgetTracker.topUp("r8", "j1", 0.05);
-  // Second call should be a no-op, not throw
-  budgetTracker.topUp("r8", "j1", 0.05);
+  budgetTracker.topUp("r8", "j1", 0.05, "intent-abc-123");
+  // Duplicate webhook delivery — same intentId should be a no-op
+  budgetTracker.topUp("r8", "j1", 0.05, "intent-abc-123");
 
   const state = budgetTracker.getState("r8", "j1");
   // spentUsd should only be decremented once
   assert.ok(state!.spentUsd >= -0.04, `spentUsd should reflect single topUp, got ${state!.spentUsd}`);
+});
+
+await test("duplicate webhook retry minutes later still rejected by intentId", async () => {
+  budgetTracker.register("r9", "j1", 0.10);
+  try { await budgetTracker.deduct("r9", "j1", 0.20); } catch {}
+
+  const p = budgetTracker.waitForFunding("r9", "j1", 5000);
+  budgetTracker.topUp("r9", "j1", 0.10, "intent-retry-test");
+  await p;
+
+  // Job continues, exceeds budget again in a second cycle
+  try { await budgetTracker.deduct("r9", "j1", 0.50); } catch {}
+  const p2 = budgetTracker.waitForFunding("r9", "j1", 500);
+
+  // Late retry of the FIRST webhook — same intent ID
+  budgetTracker.topUp("r9", "j1", 0.10, "intent-retry-test");
+
+  // Should NOT have resolved — the duplicate was rejected
+  let resolved = false;
+  p2.then(() => { resolved = true; }).catch(() => {});
+  await new Promise(r => setTimeout(r, 50));
+  assert.strictEqual(resolved, false, "Late duplicate webhook should not resolve second funding gate");
+
+  // Fund with a fresh intent to clean up
+  budgetTracker.topUp("r9", "j1", 1.0, "intent-fresh");
+  await p2;
 });
 
 // ─── Summary ──────────────────────────────────────────────────

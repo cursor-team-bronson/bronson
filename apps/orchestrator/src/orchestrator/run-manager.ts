@@ -74,7 +74,7 @@ export async function startRun(config: WorkflowConfig): Promise<RunState> {
   return run;
 }
 
-export function topUpJobBudget(runId: string, jobId: string, amountUsd: number) {
+export function topUpJobBudget(runId: string, jobId: string, amountUsd: number, intentId?: string) {
   const run = runs.get(runId);
   if (!run) throw new Error(`Run ${runId} not found`);
   const jobState = run.jobs[jobId];
@@ -82,9 +82,9 @@ export function topUpJobBudget(runId: string, jobId: string, amountUsd: number) 
   if (jobState.status !== "awaiting_funding")
     throw new Error(`Job ${jobId} is not awaiting funding (status: ${jobState.status})`);
 
-  budgetTracker.topUp(runId, jobId, amountUsd);
+  budgetTracker.topUp(runId, jobId, amountUsd, intentId);
   jobState.checkoutUrl = undefined;
-  appendVersioned(runId, "BUDGET_FUNDED", jobId, { amountUsd });
+  appendVersioned(runId, "BUDGET_FUNDED", jobId, { amountUsd, intentId });
 }
 
 export function cancelJobFunding(runId: string, jobId: string) {

@@ -35,6 +35,12 @@ interface JobBudgetState {
 
 class BudgetTracker {
   private state = new Map<string, JobBudgetState>();
+  /**
+   * Permanent set of intent IDs that have been processed. Prevents
+   * duplicate webhook deliveries (common with payment processors)
+   * from double-decrementing spentUsd, regardless of timing.
+   */
+  private processedIntents = new Set<string>();
 
   private key(runId: string, jobId: string) {
     return `${runId}::${jobId}`;
@@ -116,7 +122,10 @@ class BudgetTracker {
         return;
       }
 
-      entry.resolve = resolve;
+      entry.resolve = () => {
+        entry.settled = false;
+        resolve();
+      };
       entry.reject = reject;
 
       entry.timeoutHandle = setTimeout(() => {
@@ -130,12 +139,24 @@ class BudgetTracker {
     });
   }
 
-  /** Called when AllScale webhook confirms payment. Idempotent — duplicate deliveries are ignored. */
-  topUp(runId: string, jobId: string, amountUsd: number) {
+  /**
+   * Called when AllScale webhook confirms payment. Idempotent — duplicate
+   * deliveries are rejected via a persistent set of processed intent IDs,
+   * so retries arriving seconds or minutes later cannot double-decrement.
+   *
+   * @param intentId The AllScale checkout intent ID from the webhook payload.
+   *                 Pass undefined only in tests or manual /fund calls.
+   */
+  topUp(runId: string, jobId: string, amountUsd: number, intentId?: string) {
+    if (intentId) {
+      if (this.processedIntents.has(intentId)) return;
+      this.processedIntents.add(intentId);
+    }
+
     const k = this.key(runId, jobId);
     const entry = this.state.get(k);
     if (!entry) throw new Error(`No budget entry for ${runId}::${jobId}`);
-    if (entry.settled) return; // duplicate webhook delivery — no-op
+    if (entry.settled) return;
 
     entry.settled = true;
     entry.spentUsd = Math.max(0, entry.spentUsd - amountUsd);
@@ -154,10 +175,6 @@ class BudgetTracker {
       entry.reject = undefined;
       resolve();
     }
-
-    // Reset settled so a second budget-exceeded cycle on the same job
-    // does not instantly bypass the gate.
-    queueMicrotask(() => { entry.settled = false; });
   }
 
   /** Cancel a pending funding gate — rejects the waitForFunding promise. */
