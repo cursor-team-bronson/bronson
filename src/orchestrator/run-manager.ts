@@ -1,11 +1,29 @@
 import { v4 as uuidv4 } from "uuid";
 import { WorkflowConfig, RunState, JobState } from "../types/index.js";
 import { resolveDAG } from "../parser/dag-resolver.js";
-import { eventLog } from "../event-log/event-log.js";
+import { eventLog, VersionMismatchError } from "../event-log/event-log.js";
 import { gateManager } from "../gates/gate-manager.js";
 import { runAgent } from "../agent-runner/clod-client.js";
 
 const runs = new Map<string, RunState>();
+
+/** Gate-related log writes use optimistic concurrency; retry if parallel jobs race on version. */
+function appendGateEvent(
+  runId: string,
+  type: "GATE_PENDING" | "GATE_APPROVED" | "GATE_REJECTED",
+  jobId: string,
+  payload?: Record<string, unknown>,
+) {
+  for (;;) {
+    const expectedVersion = eventLog.getLastVersion(runId);
+    try {
+      return eventLog.append(runId, type, jobId, payload, expectedVersion);
+    } catch (e) {
+      if (e instanceof VersionMismatchError) continue;
+      throw e;
+    }
+  }
+}
 
 export const getRun = (runId: string) => runs.get(runId);
 export const listRuns = () => [...runs.values()];
@@ -66,20 +84,20 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
       let finalOutput = result.output;
       if (jobConfig.gate === "human") {
         jobState.status = "gate_pending"; run.status = "gate_pending";
-        eventLog.append(run.runId, "GATE_PENDING", jobId, { proposedOutput: result.output });
+        appendGateEvent(run.runId, "GATE_PENDING", jobId, { proposedOutput: result.output });
         const decision = await gateManager.waitForApproval({
           runId: run.runId, jobId, proposedOutput: result.output,
           context: Object.values(upstreamOutputs).join("\n\n"),
         });
         if (!decision.approved) {
           jobState.status = "failed"; jobState.error = decision.reason ?? "Gate rejected";
-          eventLog.append(run.runId, "GATE_REJECTED", jobId, { reason: decision.reason });
+          appendGateEvent(run.runId, "GATE_REJECTED", jobId, { reason: decision.reason });
           return;
         }
         if (decision.editedOutput) finalOutput = decision.editedOutput;
         jobState.status = "gate_approved";
         run.status = gateManager.listPending(run.runId).length > 0 ? "gate_pending" : "running";
-        eventLog.append(run.runId, "GATE_APPROVED", jobId);
+        appendGateEvent(run.runId, "GATE_APPROVED", jobId);
       }
       jobState.status = "completed"; jobState.completedAt = new Date().toISOString();
       jobState.output = finalOutput; jobState.tokensUsed = result.tokensUsed; jobState.costUsd = result.costUsd;

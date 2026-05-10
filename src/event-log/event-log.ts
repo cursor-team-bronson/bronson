@@ -4,12 +4,51 @@ import { EventType, RunEvent } from "../types/index.js";
 /** Oldest events for a run are dropped once this count is exceeded (per-run cap). */
 const MAX_EVENTS_PER_RUN = 20_000;
 
+export class VersionMismatchError extends Error {
+  constructor(
+    readonly runId: string,
+    readonly expectedVersion: number,
+    readonly currentVersion: number,
+  ) {
+    super(
+      `Event log version mismatch for run ${runId}: expected tail ${expectedVersion}, actual ${currentVersion}`,
+    );
+    this.name = "VersionMismatchError";
+  }
+}
+
 export class EventLog {
   private events: RunEvent[] = [];
+  /** Latest committed version number per run (0 if no events yet). */
+  private lastVersion = new Map<string, number>();
   private subscribers = new Map<string, (event: RunEvent) => void>();
 
-  append(runId: string, type: EventType, jobId?: string, payload?: Record<string, unknown>): RunEvent {
-    const event: RunEvent = { eventId: uuidv4(), runId, jobId, type, timestamp: new Date().toISOString(), payload };
+  getLastVersion(runId: string): number {
+    return this.lastVersion.get(runId) ?? 0;
+  }
+
+  append(
+    runId: string,
+    type: EventType,
+    jobId?: string,
+    payload?: Record<string, unknown>,
+    expectedVersion?: number,
+  ): RunEvent {
+    const current = this.lastVersion.get(runId) ?? 0;
+    if (expectedVersion !== undefined && expectedVersion !== current) {
+      throw new VersionMismatchError(runId, expectedVersion, current);
+    }
+    const nextVersion = current + 1;
+    const event: RunEvent = {
+      eventId: uuidv4(),
+      runId,
+      jobId,
+      type,
+      timestamp: new Date().toISOString(),
+      version: nextVersion,
+      payload,
+    };
+    this.lastVersion.set(runId, nextVersion);
     this.events.push(event);
     this.pruneRunIfNeeded(runId);
     this.notify(event);
@@ -30,9 +69,21 @@ export class EventLog {
       }
       return true;
     });
+    this.recomputeLastVersion(runId);
   }
 
-  getEventsForRun(runId: string) { return this.events.filter(e => e.runId === runId); }
+  private recomputeLastVersion(runId: string) {
+    let max = 0;
+    for (const e of this.events) {
+      if (e.runId === runId) max = Math.max(max, e.version);
+    }
+    if (max === 0) this.lastVersion.delete(runId);
+    else this.lastVersion.set(runId, max);
+  }
+
+  getEventsForRun(runId: string) {
+    return this.events.filter(e => e.runId === runId);
+  }
 
   getJobOutput(runId: string, jobId: string): string | undefined {
     return [...this.events].reverse()
@@ -40,8 +91,12 @@ export class EventLog {
       ?.payload?.output as string | undefined;
   }
 
-  subscribe(id: string, handler: (e: RunEvent) => void) { this.subscribers.set(id, handler); }
-  unsubscribe(id: string) { this.subscribers.delete(id); }
+  subscribe(id: string, handler: (e: RunEvent) => void) {
+    this.subscribers.set(id, handler);
+  }
+  unsubscribe(id: string) {
+    this.subscribers.delete(id);
+  }
 
   private notify(event: RunEvent) {
     for (const h of this.subscribers.values()) try { h(event); } catch {}

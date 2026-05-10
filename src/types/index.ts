@@ -46,6 +46,8 @@ export type EventType =
 export interface RunEvent {
   eventId: string; runId: string; jobId?: string;
   type: EventType; timestamp: string;
+  /** Monotonic per-run sequence for ordering and optimistic concurrency. */
+  version: number;
   payload?: Record<string, unknown>;
 }
 

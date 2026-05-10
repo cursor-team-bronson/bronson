@@ -7,16 +7,38 @@ export function formatSseRunEvent(event: RunEvent): string {
   return `id: ${event.eventId}\ndata: ${JSON.stringify(event)}\n\n`;
 }
 
-export function createSSEStream(res: Response, runId: string): () => void {
+function prepareSseHeaders(res: Response): void {
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
   res.flushHeaders();
-  const id = uuidv4();
-  eventLog.subscribe(id, event => {
-    if (event.runId === runId) res.write(formatSseRunEvent(event));
+}
+
+/**
+ * Opens an SSE stream: replays history (with two passes to close snapshot gaps), then subscribes.
+ * Uses `delivered` so live notifications never duplicate replayed eventIds.
+ */
+export function streamRunEvents(res: Response, runId: string): () => void {
+  prepareSseHeaders(res);
+  const delivered = new Set<string>();
+  const replay = () => {
+    for (const e of eventLog.getEventsForRun(runId)) {
+      if (delivered.has(e.eventId)) continue;
+      delivered.add(e.eventId);
+      res.write(formatSseRunEvent(e));
+    }
+  };
+  replay();
+  replay();
+
+  const subId = uuidv4();
+  eventLog.subscribe(subId, event => {
+    if (event.runId !== runId) return;
+    if (delivered.has(event.eventId)) return;
+    delivered.add(event.eventId);
+    res.write(formatSseRunEvent(event));
   });
-  const cleanup = () => eventLog.unsubscribe(id);
+  const cleanup = () => eventLog.unsubscribe(subId);
   res.on("close", cleanup);
   return cleanup;
 }
