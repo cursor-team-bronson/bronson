@@ -30,6 +30,40 @@ function trackRunExecution(runId: string, p: Promise<void>): void {
   });
 }
 
+/**
+ * After {@link runExecutionPromises} is idle, reserve it synchronously. If multiple callers wake
+ * together when the same execution promise settles, only one wins the slot; losers release their
+ * orphan lease and loop (awaiting the winner's work).
+ */
+async function acquireRunExecutionLease(runId: string): Promise<{
+  abandon: () => void;
+  releaseLease: () => void;
+}> {
+  for (;;) {
+    while (runExecutionPromises.has(runId)) {
+      await runExecutionPromises.get(runId)!;
+    }
+
+    let releaseLease!: () => void;
+    const lease = new Promise<void>((r) => {
+      releaseLease = r;
+    });
+    if (runExecutionPromises.has(runId)) continue;
+
+    runExecutionPromises.set(runId, lease);
+    if (runExecutionPromises.get(runId) !== lease) {
+      releaseLease();
+      continue;
+    }
+
+    const abandon = () => {
+      if (runExecutionPromises.get(runId) === lease) runExecutionPromises.delete(runId);
+      releaseLease();
+    };
+    return { abandon, releaseLease };
+  }
+}
+
 function normalizeJobsForResume(run: RunState): void {
   for (const j of Object.values(run.jobs)) {
     if (j.status === "running" || j.status === "gate_approved" || j.status === "gate_pending") {
@@ -151,15 +185,10 @@ export async function continuePersistedRun(runId: string): Promise<RunState | nu
     return getRun(rid) ?? (await hydrateRunFromDb(rid)) ?? null;
   }
 
-  let releaseClaim!: () => void;
-  const claim = new Promise<void>((r) => {
-    releaseClaim = r;
-  });
-  runExecutionPromises.set(rid, claim);
+  const { abandon, releaseLease } = await acquireRunExecutionLease(rid);
 
   const abandonClaim = (): null => {
-    if (runExecutionPromises.get(rid) === claim) runExecutionPromises.delete(rid);
-    releaseClaim();
+    abandon();
     return null;
   };
 
@@ -205,7 +234,7 @@ export async function continuePersistedRun(runId: string): Promise<RunState | nu
       void persistRunStatus(rid, "failed");
     });
     trackRunExecution(rid, p);
-    releaseClaim();
+    releaseLease();
 
     return run;
   } catch (e) {
@@ -326,19 +355,10 @@ export async function retryJobAndContinue(
     };
   }
 
-  if (runExecutionPromises.has(runId)) {
-    await runExecutionPromises.get(runId)!;
-  }
-
-  let releaseClaim!: () => void;
-  const claim = new Promise<void>((r) => {
-    releaseClaim = r;
-  });
-  runExecutionPromises.set(runId, claim);
+  const { abandon, releaseLease } = await acquireRunExecutionLease(runId);
 
   const abandonClaim = (error: string): { error: string } => {
-    if (runExecutionPromises.get(runId) === claim) runExecutionPromises.delete(runId);
-    releaseClaim();
+    abandon();
     return { error };
   };
 
@@ -380,7 +400,7 @@ export async function retryJobAndContinue(
     })();
 
     trackRunExecution(runId, p);
-    releaseClaim();
+    releaseLease();
 
     return { ok: true };
   } catch (e) {
@@ -397,6 +417,7 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     jobState.status = "running";
     jobState.startedAt = new Date().toISOString();
+    appendRunEvent(run.runId, "JOB_STARTED", jobId);
 
     const upstreamOutputs: Record<string, string> = {};
     for (const dep of jobConfig.depends_on ?? []) {

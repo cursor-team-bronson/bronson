@@ -553,9 +553,23 @@ export default function RunPage() {
 
     try {
       if (resumeRunId) {
-        const cont = await fetch(`/api/runs/${encodeURIComponent(resumeRunId)}/continue`, {
-          method: "POST",
-        });
+        let cont: Response;
+        try {
+          cont = await fetch(`/api/runs/${encodeURIComponent(resumeRunId)}/continue`, {
+            method: "POST",
+          });
+        } catch {
+          try {
+            localStorage.removeItem(LAST_MODEL_RUN_ID_STORAGE_KEY);
+          } catch {
+            /* ignore */
+          }
+          setIsRunning(false);
+          setRunError(
+            `Could not reach the server to resume run ${resumeRunId}. The saved run id was cleared. Check the orchestrator and ORCHESTRATOR_URL, then use Run to start fresh or paste a run id.`,
+          );
+          return;
+        }
         if (cont.ok) {
           const started = (await cont.json()) as RunState;
           const runId = started.runId;
