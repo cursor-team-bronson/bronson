@@ -3,7 +3,7 @@ import { parseWorkflowString } from "../parser/yaml-parser.js";
 import { startRun, getRun, listRuns } from "../orchestrator/run-manager.js";
 import { gateManager } from "../gates/gate-manager.js";
 import { eventLog } from "../event-log/event-log.js";
-import { createSSEStream } from "./sse.js";
+import { createSSEStream, formatSseRunEvent } from "./sse.js";
 
 export const router = Router();
 
@@ -28,7 +28,7 @@ router.get("/runs/:runId/events", (req, res) => {
   if (!run) { res.status(404).json({ error: "Run not found" }); return; }
   const past = eventLog.getEventsForRun(req.params.runId);
   createSSEStream(res, req.params.runId);
-  for (const e of past) res.write(`data: ${JSON.stringify(e)}\n\n`);
+  for (const e of past) res.write(formatSseRunEvent(e));
 });
 
 router.get("/runs/:runId/events/history", (req, res) => {

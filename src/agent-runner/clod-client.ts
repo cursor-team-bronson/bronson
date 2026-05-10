@@ -8,6 +8,12 @@ const clod = new OpenAI({
   apiKey: process.env.CLOD_API_KEY ?? "",
 });
 
+export function assertClodConfigured(): void {
+  if (!process.env.CLOD_API_KEY?.trim()) {
+    throw new Error("CLOD_API_KEY environment variable must be set");
+  }
+}
+
 export async function runAgent(runId: string, options: AgentRunOptions, upstreamOutputs: Record<string, string>): Promise<AgentRunResult> {
   const { jobId, jobConfig } = options;
   const contextSection = buildJobContext(upstreamOutputs, jobConfig.context_budget);

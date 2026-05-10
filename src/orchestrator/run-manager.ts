@@ -34,6 +34,16 @@ async function executeRun(run: RunState, config: WorkflowConfig, waves: string[]
       return;
     }
   }
+  const failedJobIds = Object.values(run.jobs).filter(j => j.status === "failed").map(j => j.jobId);
+  if (failedJobIds.length > 0) {
+    run.status = "failed";
+    run.completedAt = new Date().toISOString();
+    eventLog.append(run.runId, "RUN_FAILED", undefined, {
+      reason: "One or more jobs failed after retries",
+      failedJobIds,
+    });
+    return;
+  }
   run.status = "completed";
   run.completedAt = new Date().toISOString();
   eventLog.append(run.runId, "RUN_COMPLETED");
@@ -67,7 +77,8 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
           return;
         }
         if (decision.editedOutput) finalOutput = decision.editedOutput;
-        run.status = "running"; jobState.status = "gate_approved";
+        jobState.status = "gate_approved";
+        run.status = gateManager.listPending(run.runId).length > 0 ? "gate_pending" : "running";
         eventLog.append(run.runId, "GATE_APPROVED", jobId);
       }
       jobState.status = "completed"; jobState.completedAt = new Date().toISOString();
