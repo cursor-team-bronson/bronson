@@ -9,7 +9,8 @@ function orchestratorBase(): string {
 
 async function proxy(req: NextRequest, pathSegments: string[]): Promise<Response> {
   const suffix = pathSegments.length ? pathSegments.join("/") : "";
-  const target = new URL(`${orchestratorBase()}/api/${suffix}`);
+  const base = orchestratorBase();
+  const target = new URL(`${base}/api/${suffix}`);
   target.search = req.nextUrl.search;
 
   const headers = new Headers(req.headers);
@@ -20,7 +21,24 @@ async function proxy(req: NextRequest, pathSegments: string[]): Promise<Response
     body = await req.arrayBuffer();
   }
 
-  const upstream = await fetch(target, { method: req.method, headers, body });
+  let upstream: Response;
+  try {
+    upstream = await fetch(target, { method: req.method, headers, body });
+  } catch (err) {
+    const detail =
+      err instanceof Error
+        ? [err.message, err.cause instanceof Error ? err.cause.message : undefined]
+            .filter(Boolean)
+            .join(" — ")
+        : String(err);
+    return Response.json(
+      {
+        error: `Orchestrator unreachable at ${base} (${detail}). If the orchestrator printed a different port (e.g. after EADDRINUSE), set ORCHESTRATOR_URL in apps/web/.env.local to match.`,
+      },
+      { status: 502 },
+    );
+  }
+
   return new Response(upstream.body, {
     status: upstream.status,
     statusText: upstream.statusText,

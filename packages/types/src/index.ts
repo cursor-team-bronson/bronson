@@ -59,7 +59,7 @@ export interface RunState {
 }
 
 export type EventType =
-  | "RUN_STARTED" | "JOB_STARTED" | "JOB_COMPLETED" | "JOB_FAILED"
+  | "RUN_STARTED" | "RUN_RESUMED" | "JOB_STARTED" | "JOB_COMPLETED" | "JOB_FAILED"
   | "JOB_RETRY_WARNING" | "GATE_PENDING" | "GATE_APPROVED" | "GATE_REJECTED"
   | "BUDGET_EXCEEDED" | "BUDGET_FUNDED" | "JOB_RESUMED"
   | "RUN_COMPLETED" | "RUN_FAILED";
@@ -78,7 +78,11 @@ export interface GateDecision {
   approved: boolean; editedOutput?: string; reason?: string;
 }
 export interface AgentRunOptions {
-  jobId: string; jobConfig: JobConfig; contextInput: string;
+  jobId: string;
+  jobConfig: JobConfig;
+  contextInput: string;
+  /** When aborted, in-flight chat.completions calls are cancelled (OpenAI SDK). */
+  abortSignal?: AbortSignal;
 }
 export interface AgentRunResult {
   output: string;

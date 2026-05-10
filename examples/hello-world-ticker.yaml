@@ -3,6 +3,8 @@ name: hello-world-ticker
 
 jobs:
   emit_status:
+    # Optional if orchestrator has DEFAULT_AGENT_MODEL / CLOD_DEFAULT_MODEL — must match CLōD’s exact id.
+    model: "DeepSeek V3"
     prompt: |
       Output exactly three lines of plain text only (no markdown, no blank lines before or after).
       Line 1: Hello World
