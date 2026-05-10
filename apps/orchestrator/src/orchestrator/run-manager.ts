@@ -31,38 +31,15 @@ export const listRuns = () => [...runs.values()];
 export async function startRun(config: WorkflowConfig): Promise<RunState> {
   const runId = uuidv4();
   const dag = resolveDAG(config);
-  
   const jobs: Record<string, JobState> = {};
   for (const jobId of dag.nodes.keys()) jobs[jobId] = { jobId, status: "pending", retryCount: 0 };
-  
-  //Create  JSON-friendly array of DAG topology
-  const serializedDag = {
-    nodes: Array.from(dag.nodes.values()).map(n => ({
-      jobId: n.jobId,
-      dependencies: n.dependencies,
-      dependents: n.dependents
-    })),
-    executionWaves: dag.executionWaves
-  };
-
-  //Attach dag to RunState
-  const run = { 
-    runId, 
-    workflowName: config.name, 
-    status: "running", 
-    createdAt: new Date().toISOString(), 
-    jobs,
-    dag: serializedDag 
-  } as RunState & { dag: typeof serializedDag };
-
+  const run: RunState = { runId, workflowName: config.name, status: "running", createdAt: new Date().toISOString(), jobs };
   runs.set(runId, run);
   eventLog.append(runId, "RUN_STARTED", undefined, { workflowName: config.name });
-  
   executeRun(run, config, dag.executionWaves).catch(err => {
     run.status = "failed";
     eventLog.append(runId, "RUN_FAILED", undefined, { error: String(err) });
   });
-  
   return run;
 }
 
@@ -128,21 +105,11 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
       return;
     } catch (err) {
       jobState.retryCount = attempt;
-      if (attempt < maxAttempts) {
-        const delayMs = 500 * Math.pow(2, attempt - 1);
-        //Emitting the warning state dynamically to log so SSE stream picks it up
-        eventLog.append(run.runId, "JOB_RETRY_WARNING" as any, jobId, { 
-          attempt, 
-          maxAttempts, 
-          reason: String(err), 
-          nextRetryDelayMs: delayMs 
-        });
-        await new Promise(r => setTimeout(r, delayMs));
-      } else {
+      if (attempt === maxAttempts) {
         jobState.status = "failed"; jobState.error = String(err);
         eventLog.append(run.runId, "JOB_FAILED", jobId, { error: String(err) });
       }
-
+      if (attempt < maxAttempts) await new Promise(r => setTimeout(r, 500 * Math.pow(2, attempt - 1)));
     }
   }
 }
