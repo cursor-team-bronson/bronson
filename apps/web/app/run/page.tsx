@@ -580,6 +580,19 @@ export default function RunPage() {
           beginWatchingRun(runId);
           return;
         }
+
+        try {
+          localStorage.removeItem(LAST_MODEL_RUN_ID_STORAGE_KEY);
+        } catch {
+          /* ignore */
+        }
+        const errBody = (await cont.json().catch(() => ({}))) as { error?: string };
+        setIsRunning(false);
+        setRunError(
+          errBody.error ??
+            `Could not resume the saved run (${resumeRunId}). It may already be finished or the server rejected continue. The saved run id was cleared; fix the issue or start a new run with Run.`,
+        );
+        return;
       }
 
       if (!runnable) {

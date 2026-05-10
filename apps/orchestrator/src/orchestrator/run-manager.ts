@@ -15,6 +15,7 @@ import {
   persistRunStart,
   persistRunStatus,
 } from "../persistence/supabase-job-store.js";
+import { persistStepGateApproved, persistWorkflowRunStatus } from "../persist/supabase-sync.js";
 import { attachJobAbort, detachJobAbort } from "./job-abort-registry.js";
 
 const runs = new Map<string, RunState>();
@@ -73,7 +74,8 @@ async function committedJobOutput(runId: string, jobId: string): Promise<string 
   return fetchJobOutputFromDb(runId, jobId);
 }
 
-function appendGateEvent(
+/** Append a run event with CAS on expectedVersion so concurrent writers cannot corrupt the version sequence. */
+function appendRunEvent(
   runId: string,
   type: EventType,
   jobId?: string,
@@ -121,12 +123,12 @@ export async function startRun(config: WorkflowConfig, workflowYamlSnapshot: str
   await persistRunStart(runId, config.name, workflowYamlSnapshot);
   runs.set(runId, run);
 
-  eventLog.append(runId, "RUN_STARTED", undefined, { workflowName: config.name });
+  appendRunEvent(runId, "RUN_STARTED", undefined, { workflowName: config.name });
 
   const p = executeRun(run, config, dag.executionWaves).catch((err) => {
     run.status = "failed";
     run.completedAt = run.completedAt ?? new Date().toISOString();
-    eventLog.append(runId, "RUN_FAILED", undefined, { error: String(err) });
+    appendRunEvent(runId, "RUN_FAILED", undefined, { error: String(err) });
     void persistRunStatus(runId, "failed");
   });
   trackRunExecution(runId, p);
@@ -145,27 +147,39 @@ export async function continuePersistedRun(runId: string): Promise<RunState | nu
   if (!rid || !isJobPersistenceEnabled()) return null;
 
   if (runExecutionPromises.has(rid)) {
-    const inFlight = getRun(rid);
-    if (inFlight) return inFlight;
+    await runExecutionPromises.get(rid)!;
+    return getRun(rid) ?? (await hydrateRunFromDb(rid)) ?? null;
   }
+
+  let releaseClaim!: () => void;
+  const claim = new Promise<void>((r) => {
+    releaseClaim = r;
+  });
+  runExecutionPromises.set(rid, claim);
+
+  const abandonClaim = (): null => {
+    if (runExecutionPromises.get(rid) === claim) runExecutionPromises.delete(rid);
+    releaseClaim();
+    return null;
+  };
 
   runs.delete(rid);
 
   const snap = await fetchRunSnapshot(rid);
-  if (!snap) return null;
+  if (!snap) return abandonClaim();
 
   let config: WorkflowConfig;
   try {
     config = parseWorkflowString(snap.workflow_yaml);
   } catch {
-    return null;
+    return abandonClaim();
   }
 
   const run = (await hydrateRunFromDb(rid)) ?? undefined;
-  if (!run) return null;
+  if (!run) return abandonClaim();
 
   const allDone = Object.values(run.jobs).every((j) => j.status === "completed" || j.status === "skipped");
-  if (allDone) return null;
+  if (allDone) return abandonClaim();
 
   const hasIncomplete = Object.values(run.jobs).some(
     (j) =>
@@ -174,24 +188,42 @@ export async function continuePersistedRun(runId: string): Promise<RunState | nu
       j.status === "gate_pending" ||
       j.status === "gate_approved",
   );
-  if (!hasIncomplete) return null;
+  if (!hasIncomplete) return abandonClaim();
 
   normalizeJobsForResume(run);
   run.status = "running";
   delete run.completedAt;
   void persistRunStatus(rid, "running");
   await persistRunStart(rid, config.name, snap.workflow_yaml);
-  eventLog.append(rid, "RUN_RESUMED", undefined, { workflowName: config.name });
+  appendRunEvent(rid, "RUN_RESUMED", undefined, { workflowName: config.name });
 
   const dag = resolveDAG(config);
   const p = resumeExecuteRun(run, config, dag.executionWaves).catch((err) => {
     run.status = "failed";
-    eventLog.append(rid, "RUN_FAILED", undefined, { error: String(err) });
+    appendRunEvent(rid, "RUN_FAILED", undefined, { error: String(err) });
     void persistRunStatus(rid, "failed");
   });
   trackRunExecution(rid, p);
+  releaseClaim();
 
   return run;
+}
+
+function cancelAwaitingJobs(run: RunState, reason: string): void {
+  const now = new Date().toISOString();
+  for (const j of Object.values(run.jobs)) {
+    if (
+      j.status === "pending" ||
+      j.status === "running" ||
+      j.status === "gate_pending" ||
+      j.status === "gate_approved" ||
+      j.status === "awaiting_funding"
+    ) {
+      j.status = "skipped";
+      j.completedAt = now;
+      j.error = reason;
+    }
+  }
 }
 
 function applyRunTerminalState(run: RunState, config: WorkflowConfig): void {
@@ -202,7 +234,7 @@ function applyRunTerminalState(run: RunState, config: WorkflowConfig): void {
     run.status = "failed";
     run.completedAt = new Date().toISOString();
     cancelAwaitingJobs(run, "Run failed");
-    eventLog.append(run.runId, "RUN_FAILED", undefined, {
+    appendRunEvent(run.runId, "RUN_FAILED", undefined, {
       reason: "One or more jobs failed after retries",
       failedJobIds,
     });
@@ -213,7 +245,7 @@ function applyRunTerminalState(run: RunState, config: WorkflowConfig): void {
   if (allDone) {
     run.status = "completed";
     run.completedAt = new Date().toISOString();
-    eventLog.append(run.runId, "RUN_COMPLETED");
+    appendRunEvent(run.runId, "RUN_COMPLETED");
     void persistRunStatus(run.runId, "completed");
   }
 }
@@ -224,7 +256,7 @@ async function executeRun(run: RunState, config: WorkflowConfig, waves: string[]
     if (wave.some((jobId) => run.jobs[jobId].status === "failed" && config.jobs[jobId].on_failure === "halt")) {
       run.status = "failed";
       run.completedAt = new Date().toISOString();
-      eventLog.append(run.runId, "RUN_FAILED", undefined, { reason: "Job failed with on_failure: halt" });
+      appendRunEvent(run.runId, "RUN_FAILED", undefined, { reason: "Job failed with on_failure: halt" });
       void persistRunStatus(run.runId, "failed");
       return;
     }
@@ -248,7 +280,7 @@ async function resumeExecuteRun(run: RunState, config: WorkflowConfig, waves: st
     if (wave.some((jobId) => run.jobs[jobId].status === "failed" && config.jobs[jobId]?.on_failure === "halt")) {
       run.status = "failed";
       run.completedAt = new Date().toISOString();
-      eventLog.append(run.runId, "RUN_FAILED", undefined, { reason: "Job failed with on_failure: halt" });
+      appendRunEvent(run.runId, "RUN_FAILED", undefined, { reason: "Job failed with on_failure: halt" });
       void persistRunStatus(run.runId, "failed");
       return;
     }
@@ -293,40 +325,61 @@ export async function retryJobAndContinue(
         "Job persistence is disabled. Set SUPABASE_URL (or NEXT_PUBLIC_SUPABASE_URL) and SUPABASE_SERVICE_ROLE_KEY on the orchestrator.",
     };
   }
+
+  if (runExecutionPromises.has(runId)) {
+    await runExecutionPromises.get(runId)!;
+  }
+
+  let releaseClaim!: () => void;
+  const claim = new Promise<void>((r) => {
+    releaseClaim = r;
+  });
+  runExecutionPromises.set(runId, claim);
+
+  const abandonClaim = (error: string): { error: string } => {
+    if (runExecutionPromises.get(runId) === claim) runExecutionPromises.delete(runId);
+    releaseClaim();
+    return { error };
+  };
+
   let run = getRun(runId);
   if (!run) run = (await hydrateRunFromDb(runId)) ?? undefined;
-  if (!run) return { error: "Run not found" };
+  if (!run) return abandonClaim("Run not found");
 
   const snap = await fetchRunSnapshot(runId);
-  if (!snap) return { error: "Run snapshot not found in database" };
+  if (!snap) return abandonClaim("Run snapshot not found in database");
 
   let config: WorkflowConfig;
   try {
     config = parseWorkflowString(snap.workflow_yaml);
   } catch (e) {
-    return { error: String(e) };
+    return abandonClaim(String(e));
   }
 
-  if (!run.jobs[jobId]) return { error: "Unknown job id" };
+  if (!run.jobs[jobId]) return abandonClaim("Unknown job id");
   if (run.jobs[jobId].status !== "failed") {
-    return { error: `Job is not failed (status=${run.jobs[jobId].status}); only failed jobs can be retried.` };
+    return abandonClaim(`Job is not failed (status=${run.jobs[jobId].status}); only failed jobs can be retried.`);
   }
 
   run.jobs[jobId] = { jobId, status: "pending", retryCount: 0 };
   run.status = "running";
   delete run.completedAt;
 
-  void (async () => {
+  const runRef = run;
+  const p = (async () => {
     try {
-      await executeJob(run, config, jobId);
-      if (run.jobs[jobId].status === "completed") {
-        await runReadyDependents(run, config, jobId);
+      await executeJob(runRef, config, jobId);
+      if (runRef.jobs[jobId].status === "completed") {
+        await runReadyDependents(runRef, config, jobId);
       }
-      applyRunTerminalState(run, config);
+      applyRunTerminalState(runRef, config);
     } catch (e) {
       console.error("[bronson] retryJobAndContinue:", e);
     }
   })();
+
+  trackRunExecution(runId, p);
+  releaseClaim();
 
   return { ok: true };
 }
@@ -358,7 +411,7 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
       if (jobConfig.gate === "human") {
         jobState.status = "gate_pending";
         run.status = "gate_pending";
-        appendGateEvent(run.runId, "GATE_PENDING", jobId, { proposedOutput: result.output });
+        appendRunEvent(run.runId, "GATE_PENDING", jobId, { proposedOutput: result.output });
 
         const decision = await gateManager.waitForApproval({
           runId: run.runId,
@@ -371,7 +424,7 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
           jobState.status = "failed";
           jobState.completedAt = new Date().toISOString();
           jobState.error = decision.reason ?? "Gate rejected";
-          appendGateEvent(run.runId, "GATE_REJECTED", jobId, { reason: decision.reason });
+          appendRunEvent(run.runId, "GATE_REJECTED", jobId, { reason: decision.reason });
           await persistJobRow(run.runId, { ...jobState });
           return;
         }
@@ -381,7 +434,7 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
         await persistStepGateApproved(run.runId, jobId);
         run.status = gateManager.listPending(run.runId).length > 0 ? "gate_pending" : "running";
         await persistWorkflowRunStatus(run.runId, run.status);
-        appendVersioned(run.runId, "GATE_APPROVED", jobId);
+        appendRunEvent(run.runId, "GATE_APPROVED", jobId);
       }
 
       jobState.status = "completed";
@@ -390,7 +443,7 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
       jobState.tokensUsed = result.tokensUsed;
       jobState.costUsd = result.costUsd;
 
-      eventLog.append(run.runId, "JOB_COMPLETED", jobId, {
+      appendRunEvent(run.runId, "JOB_COMPLETED", jobId, {
         output: finalOutput,
         tokensUsed: result.tokensUsed,
         costUsd: result.costUsd,
@@ -404,7 +457,7 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
         jobState.status = "failed";
         jobState.completedAt = new Date().toISOString();
         jobState.error = "Stopped by user";
-        eventLog.append(run.runId, "JOB_FAILED", jobId, { error: jobState.error });
+        appendRunEvent(run.runId, "JOB_FAILED", jobId, { error: jobState.error });
         await persistJobRow(run.runId, { ...jobState });
         return;
       }
@@ -412,7 +465,7 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
       if (attempt < maxAttempts) {
         const delayMs = 500 * Math.pow(2, attempt - 1);
 
-        eventLog.append(run.runId, "JOB_RETRY_WARNING", jobId, {
+        appendRunEvent(run.runId, "JOB_RETRY_WARNING", jobId, {
           attempt,
           maxAttempts,
           reason: msg,
@@ -424,7 +477,7 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
         jobState.status = "failed";
         jobState.completedAt = new Date().toISOString();
         jobState.error = msg;
-        eventLog.append(run.runId, "JOB_FAILED", jobId, { error: msg });
+        appendRunEvent(run.runId, "JOB_FAILED", jobId, { error: msg });
         await persistJobRow(run.runId, { ...jobState });
       }
     } finally {
