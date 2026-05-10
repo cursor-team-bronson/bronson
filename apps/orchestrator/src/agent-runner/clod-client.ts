@@ -90,7 +90,14 @@ export async function runAgent(runId: string, options: AgentRunOptions, upstream
     }
 
     for (const tc of msg.tool_calls) {
-      if (tc.type !== "function") continue;
+      if (tc.type !== "function") {
+        messages.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: `Error: unsupported tool call type "${tc.type}" (only function tools are implemented).`,
+        });
+        continue;
+      }
       const fn = tc.function.name;
       const exec = resolved.execute.get(fn);
       let toolContent: string;

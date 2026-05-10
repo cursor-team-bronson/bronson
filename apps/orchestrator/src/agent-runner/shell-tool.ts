@@ -10,6 +10,21 @@ function parsePositiveInt(raw: string | undefined, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
+/** Strip secrets so shell subprocesses cannot read them via `env` / `printenv`. */
+function shellChildEnv(): NodeJS.ProcessEnv {
+  const out = { ...process.env };
+  const sensitiveKey = /API_KEY|_SECRET|_TOKEN|PASSWORD|PRIVATE_KEY|CREDENTIAL|BEARER/i;
+  for (const key of Object.keys(out)) {
+    if (
+      /^(CLOD_|OPENAI_|AZURE_|ANTHROPIC_|AWS_|DOTENV_KEY|GITHUB_TOKEN)/i.test(key) ||
+      sensitiveKey.test(key)
+    ) {
+      delete out[key];
+    }
+  }
+  return out;
+}
+
 function drainLimited(stream: Readable, maxBytes: number): Promise<{ text: string; truncated: boolean }> {
   return new Promise((resolve, reject) => {
     let received = 0;
@@ -45,7 +60,12 @@ export async function executeShellCommand(command: string): Promise<string> {
 
   const allowlist = process.env.TOOL_SHELL_ALLOWLIST_REGEX?.trim();
   if (allowlist) {
-    const re = new RegExp(allowlist);
+    let re: RegExp;
+    try {
+      re = new RegExp(allowlist);
+    } catch (e) {
+      throw new Error(`TOOL_SHELL_ALLOWLIST_REGEX is not a valid regex: ${String(e)}`);
+    }
     if (!re.test(trimmed)) {
       throw new Error("Command blocked: does not match TOOL_SHELL_ALLOWLIST_REGEX");
     }
@@ -59,7 +79,7 @@ export async function executeShellCommand(command: string): Promise<string> {
     const child = spawn(trimmed, {
       shell: true,
       cwd,
-      env: process.env,
+      env: shellChildEnv(),
       windowsHide: true,
     });
 
