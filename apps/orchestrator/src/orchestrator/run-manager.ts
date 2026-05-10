@@ -63,6 +63,7 @@ export async function startRun(config: WorkflowConfig): Promise<RunState> {
   };
 
   runs.set(runId, run);
+
   eventLog.append(runId, "RUN_STARTED", undefined, { workflowName: config.name });
 
   executeRun(run, config, dag.executionWaves).catch(err => {
@@ -193,6 +194,7 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
         costUsd: result.costUsd,
       });
       return;
+
     } catch (err) {
       if (err instanceof BudgetExceededError) {
         jobState.status = "awaiting_funding";

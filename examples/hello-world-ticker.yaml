@@ -1,0 +1,12 @@
+# One-shot test: POST to /api/runs. The agent’s text is in the run event log, not a file on disk, unless you save it (e.g. post-hello-world.ps1 -OutFile) or use run-hello-world-ticker.sh for a loop + file append.
+name: hello-world-ticker
+
+jobs:
+  emit_status:
+    prompt: |
+      Output exactly three lines of plain text only (no markdown, no blank lines before or after).
+      Line 1: Hello World
+      Line 2: Time: <ISO-8601 UTC timestamp for the current moment>
+      Line 3: RunCount: 1
+    gate: auto
+    context_budget: 400
