@@ -69,6 +69,14 @@ router.get("/runs/:runId/budget/awaiting", (req, res) =>
 );
 
 router.post("/runs/:runId/jobs/:jobId/fund", (req, res) => {
+  const internalSecret = process.env.INTERNAL_API_SECRET;
+  if (internalSecret) {
+    const provided = req.headers["x-internal-secret"];
+    if (provided !== internalSecret) {
+      res.status(403).json({ error: "Forbidden — invalid or missing X-Internal-Secret header" });
+      return;
+    }
+  }
   try {
     const { amountUsd } = req.body as { amountUsd?: number };
     if (typeof amountUsd !== "number" || amountUsd <= 0) {

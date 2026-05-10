@@ -18,6 +18,12 @@ const CONFIRMED = 20;
  * so the halted job can resume.
  */
 export async function POST(req: Request): Promise<Response> {
+  const secret = process.env.ALLSCALE_API_SECRET;
+  if (!secret) {
+    console.error("AllScale webhook: ALLSCALE_API_SECRET is not set — rejecting all webhooks");
+    return new Response("Webhook handler not configured", { status: 503 });
+  }
+
   const rawBody = await req.text();
 
   const webhookId = req.headers.get("X-Webhook-Id") ?? "";
@@ -47,7 +53,7 @@ export async function POST(req: Request): Promise<Response> {
   const expected =
     "v1=" +
     crypto
-      .createHmac("sha256", process.env.ALLSCALE_API_SECRET ?? "")
+      .createHmac("sha256", secret)
       .update(canonical)
       .digest("base64");
 
@@ -89,9 +95,13 @@ export async function POST(req: Request): Promise<Response> {
   const jobId = orderId.slice(sep1 + 2, sep2);
 
   try {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (process.env.INTERNAL_API_SECRET) {
+      headers["X-Internal-Secret"] = process.env.INTERNAL_API_SECRET;
+    }
     const res = await fetch(`${ORCHESTRATOR}/api/runs/${runId}/jobs/${jobId}/fund`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({ amountUsd }),
     });
 

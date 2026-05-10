@@ -103,6 +103,7 @@ class BudgetTracker {
 
     if (entry.settled) {
       entry.awaiting = false;
+      entry.settled = false;
       return Promise.resolve();
     }
 
@@ -110,6 +111,7 @@ class BudgetTracker {
     return new Promise<void>((resolve, reject) => {
       if (entry.settled) {
         entry.awaiting = false;
+        entry.settled = false;
         resolve();
         return;
       }
@@ -152,6 +154,10 @@ class BudgetTracker {
       entry.reject = undefined;
       resolve();
     }
+
+    // Reset settled so a second budget-exceeded cycle on the same job
+    // does not instantly bypass the gate.
+    queueMicrotask(() => { entry.settled = false; });
   }
 
   /** Cancel a pending funding gate — rejects the waitForFunding promise. */

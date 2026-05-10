@@ -27,7 +27,7 @@ export type JobStatus =
   | "pending" | "running" | "gate_pending"
   | "gate_approved" | "awaiting_funding" | "completed" | "failed" | "skipped";
 
-export type RunStatus = "running" | "gate_pending" | "completed" | "failed";
+export type RunStatus = "running" | "gate_pending" | "awaiting_funding" | "completed" | "failed";
 
 export interface JobState {
   jobId: string; status: JobStatus;

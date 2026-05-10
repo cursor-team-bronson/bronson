@@ -199,6 +199,7 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
       if (err instanceof BudgetExceededError) {
         jobState.status = "awaiting_funding";
         jobState.checkoutUrl = err.checkoutUrl;
+        run.status = "awaiting_funding";
         appendVersioned(run.runId, "BUDGET_EXCEEDED", jobId, {
           spentUsd: err.spentUsd,
           limitUsd: err.limitUsd,
@@ -215,6 +216,7 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
           return;
         }
 
+        run.status = "running";
         appendVersioned(run.runId, "JOB_RESUMED", jobId);
 
         if (err.output !== undefined) {
