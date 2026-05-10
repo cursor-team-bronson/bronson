@@ -8,7 +8,11 @@
  */
 
 import assert from "node:assert";
-import { budgetTracker, BudgetExceededError } from "./orchestrator/budget-tracker.js";
+import {
+  budgetTracker,
+  BudgetExceededError,
+  BudgetCheckoutUnavailableError,
+} from "./orchestrator/budget-tracker.js";
 import { gateManager } from "./gates/gate-manager.js";
 import { eventLog } from "./event-log/event-log.js";
 
@@ -39,16 +43,20 @@ await test("register + deduct within limit does not throw", async () => {
   await budgetTracker.deduct("r1", "j1", 0.4);
 });
 
-await test("deduct over limit throws BudgetExceededError", async () => {
+await test("deduct over limit throws BudgetExceededError or BudgetCheckoutUnavailableError", async () => {
   budgetTracker.register("r2", "j1", 0.10);
   await budgetTracker.deduct("r2", "j1", 0.05);
   try {
     await budgetTracker.deduct("r2", "j1", 0.10);
     assert.fail("Should have thrown");
   } catch (e) {
-    assert.ok(e instanceof BudgetExceededError);
-    assert.strictEqual(e.runId, "r2");
-    assert.strictEqual(e.jobId, "j1");
+    assert.ok(e instanceof BudgetExceededError || e instanceof BudgetCheckoutUnavailableError);
+    if (e instanceof BudgetExceededError) {
+      assert.strictEqual(e.runId, "r2");
+      assert.strictEqual(e.jobId, "j1");
+    } else {
+      assert.ok(String((e as BudgetCheckoutUnavailableError).message).includes("j1"));
+    }
   }
 });
 

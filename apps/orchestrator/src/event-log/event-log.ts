@@ -91,6 +91,40 @@ export class EventLog {
       ?.payload?.output as string | undefined;
   }
 
+  /**
+   * Text for dependents when a dependency never completed successfully: retry warnings + final error.
+   * Returns undefined if the job completed (normal output available via {@link getJobOutput}) or no failure events exist.
+   */
+  getFailureContextForJob(runId: string, jobId: string): string | undefined {
+    if (this.getJobOutput(runId, jobId) !== undefined) return undefined;
+    const relevant = this.getEventsForRun(runId)
+      .filter(
+        e =>
+          e.jobId === jobId &&
+          (e.type === "JOB_RETRY_WARNING" ||
+            e.type === "JOB_FAILED" ||
+            e.type === "GATE_REJECTED"),
+      )
+      .sort((a, b) => a.version - b.version);
+    if (relevant.length === 0) return undefined;
+    const lines: string[] = [];
+    for (const e of relevant) {
+      if (e.type === "JOB_RETRY_WARNING") {
+        const p = e.payload as { attempt?: number; maxAttempts?: number; reason?: string };
+        lines.push(
+          `- After attempt ${p.attempt ?? "?"} of ${p.maxAttempts ?? "?"}: ${p.reason ?? "(no reason)"}`,
+        );
+      } else if (e.type === "JOB_FAILED") {
+        const p = e.payload as { error?: string };
+        lines.push(`- Final failure: ${p.error ?? "(no error text)"}`);
+      } else if (e.type === "GATE_REJECTED") {
+        const p = e.payload as { reason?: string };
+        lines.push(`- Human gate rejected: ${p.reason ?? "(no reason)"}`);
+      }
+    }
+    return lines.join("\n");
+  }
+
   subscribe(id: string, handler: (e: RunEvent) => void) {
     this.subscribers.set(id, handler);
   }

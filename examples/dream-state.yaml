@@ -1,0 +1,308 @@
+# dream-state — async memory consolidation & self-improvement (no human gate)
+#
+# Runs after you finish working: scans memory + git + docs, reconciles into one canonical
+# memory doc, drafts NEW Bronson workflows the repo could run later to keep improving —
+# all non-destructive (never overwrites CLAUDE.md / source memory by default).
+#
+# Ontology:
+#   Memory store   → CLAUDE.md / .cursor/memory.md (read-only input for this DAG)
+#   Session signal → git log / diffs / commits
+#   Dream job      → this DAG (async, autonomous)
+#   Output store   → .dream/memory-output.md + .dream/proposed/*.yaml (promote manually)
+#
+# Prerequisites (apps/orchestrator/.env):
+#   ALLOW_SHELL_TOOL=true
+#   TOOL_SHELL_CWD=<absolute path to the Bronson REPOSITORY ROOT>
+#     (the folder that contains README.md, apps/, packages/ — NOT examples/essay-workspace alone).
+#   TOOL_SHELL_ALLOWLIST_REGEX=.*
+#   emit_artifacts uses workspace_write (requires ALLOW_WORKSPACE_WRITE unset or true when shell is on).
+#
+# Shell runs with the host default shell (often cmd.exe on Windows). If Unix utilities fail, use
+# PowerShell one-liners (see scan prompts). Reload the web “dream-state” preset after edits; stale YAML
+# in browser storage can still define human_review — this file does not.
+# Models must match your CLōD catalog ids exactly. Scan/emit jobs use DeepSeek V3.2 (same tier as analyze);
+# if that alias is unavailable, change each model: field or set DEFAULT_AGENT_MODEL and omit model per job.
+#
+# on_failure: retry = continue the DAG (dependents receive failure context); max_retries = re-run this job.
+
+name: dream-state
+
+jobs:
+  # ─── Wave 0: orient (parallel) ─────────────────────────────────────────────
+
+  scan_memory:
+    prompt: |
+      You are reading the existing project memory store for this software repository (e.g. Bronson).
+
+      If the shell cwd appears to be only examples/essay-workspace (or any single example folder), output one line:
+      WARNING_WRONG_CWD — set TOOL_SHELL_CWD to the repo root (parent of apps/), then still try reads below.
+
+      Use the shell tool. Try POSIX-style reads first; if the host is Windows and commands fail,
+      use PowerShell equivalents:
+
+        cat CLAUDE.md  OR  powershell -NoProfile -Command "Get-Content CLAUDE.md -Raw -ErrorAction SilentlyContinue"
+        cat .cursor/memory.md  OR  powershell -NoProfile -Command "Get-Content .cursor/memory.md -Raw -ErrorAction SilentlyContinue"
+        cat .ai/memory.md  OR  powershell -NoProfile -Command "Get-Content .ai/memory.md -Raw -ErrorAction SilentlyContinue"
+
+      If none exist, list markdown under the repo (POSIX or PowerShell):
+
+        find . -maxdepth 3 -name "*.md" ... | head -20
+        OR
+        powershell -NoProfile -Command "Get-ChildItem -Recurse -Filter *.md -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch 'node_modules|\\.git' } | Select-Object -First 25 -ExpandProperty FullName"
+
+      Collect everything you find and output it verbatim, labeled by filename.
+      If absolutely nothing exists, output exactly: NO_MEMORY_FOUND
+    tools: [shell]
+    tool_rounds_max: 24
+    gate: auto
+    on_failure: retry
+    context_budget: 6000
+    model: DeepSeek V3.2
+
+  scan_git_history:
+    prompt: |
+      You are mining recent git history for project insights.
+
+      Use the shell tool to run these three commands and collect their output:
+
+        git log --oneline --no-merges -50
+        git diff HEAD~10..HEAD --stat
+        git log --format="%s%n%b" --no-merges -20
+
+      Output the raw results verbatim, clearly labeled per command.
+      If git is unavailable or the repo has fewer commits than requested,
+      output whatever is returned and note the limitation.
+      If git is entirely absent, output: NO_GIT_HISTORY
+    tools: [shell]
+    tool_rounds_max: 16
+    gate: auto
+    on_failure: retry
+    context_budget: 6000
+    model: DeepSeek V3.2
+
+  scan_project_docs:
+    prompt: |
+      You are collecting project documentation and directory context for this repo.
+
+      If listing shows only essay-workspace or a narrow examples subtree, output WARNING_WRONG_CWD first —
+      TOOL_SHELL_CWD should be the monorepo root containing README.md and apps/.
+
+      Use the shell tool. Prefer POSIX; on Windows if ls/find/cat fail, use PowerShell:
+
+        ls -la   OR   powershell -NoProfile -Command "Get-ChildItem -Force"
+        find . -maxdepth 3 -name "*.md" ...   OR   powershell -NoProfile -Command "Get-ChildItem -Recurse -Depth 3 -Filter *.md | Where-Object { $_.FullName -notmatch 'node_modules|\\.git' } | Select-Object -ExpandProperty FullName"
+        cat README.md   OR   powershell -NoProfile -Command "Get-Content README.md -Raw -ErrorAction SilentlyContinue"
+        If docs/ exists, read *.md there similarly.
+
+      Output all results verbatim, labeled by command.
+      Skip any file that does not exist without erroring.
+    tools: [shell]
+    tool_rounds_max: 24
+    gate: auto
+    on_failure: retry
+    context_budget: 6000
+    model: DeepSeek V3.2
+
+  # ─── Wave 1: analyze (parallel) ───────────────────────────────────────────
+
+  analyze_code_structure:
+    prompt: |
+      You are analyzing the CODE STRUCTURE knowledge plane for Bronson memory consolidation.
+
+      The workflow filename "dream-state" is an internal codename — describe THIS repository only.
+
+      Using the git history and project docs injected as context, extract:
+        1. Active modules, packages, and their responsibilities
+        2. Key data flows and entry points identified from commit messages
+        3. Recent structural changes: renames, additions, deletions
+        4. Patterns or architectural conventions visible from the git log
+
+      Format your output as a concise structured list of facts.
+      Tag each fact [HIGH] or [LOW]. Omit speculation. If context is missing or only shell errors, say so [LOW] — do not invent modules.
+      Target ≤ 400 words.
+    depends_on: [scan_git_history, scan_project_docs]
+    gate: auto
+    on_failure: retry
+    context_budget: 8000
+    model: DeepSeek V3.2
+
+  analyze_product_intent:
+    prompt: |
+      You are analyzing the PRODUCT INTENT knowledge plane for this software repository.
+
+      CRITICAL: Ignore the workflow codename "dream-state". Do NOT describe sleep apps, dream journals,
+      therapy, or human dream recall unless README/memory files explicitly say that. Bronson is an
+      agent/workflow orchestrator unless sources say otherwise.
+
+      If scan_memory or docs failed (JOB FAILED, HTTP errors, empty context, only shell errors), respond
+      with a short "Insufficient evidence" section listing unknowns [LOW] — do NOT fabricate product scope.
+
+      Using the existing memory store and project docs injected as context, extract:
+        1. What the project is (one sentence)
+        2. Who it is for and the core use case
+        3. Non-negotiable constraints or design principles
+        4. Explicit goals mentioned in README or memory files
+        5. Known limitations or anti-goals explicitly stated
+
+      Format your output as a concise structured list of facts.
+      Tag each fact [HIGH] or [LOW]. Target ≤ 400 words.
+    depends_on: [scan_memory, scan_project_docs]
+    gate: auto
+    on_failure: retry
+    context_budget: 8000
+    model: DeepSeek V3.2
+
+  analyze_conventions:
+    prompt: |
+      You are analyzing the OPERATIONAL CONVENTIONS knowledge plane.
+
+      Only cite conventions evidenced in context (memory, git, or scans). If scan_memory failed, rely on
+      git and prior completed outputs only; label gaps [LOW].
+
+      Using the existing memory and git history injected as context, extract:
+        1. Coding conventions and style rules
+        2. Test patterns and coverage expectations
+        3. Build, run, and deployment instructions that work
+        4. Frequently used tools, scripts, CLI commands
+        5. Explicit "never do X" / "always do Y" rules
+
+      Tag each fact [HIGH] or [LOW]. Flag contradictions with ⚠. Target ≤ 400 words.
+    depends_on: [scan_memory, scan_git_history]
+    gate: auto
+    on_failure: retry
+    context_budget: 8000
+    model: DeepSeek V3.2
+
+  # ─── Wave 2: consolidate ─────────────────────────────────────────────────
+
+  consolidate:
+    prompt: |
+      You are the memory consolidation engine for the Bronson repository. Synthesize the three
+      knowledge-plane analyses from context into ONE canonical Markdown memory document.
+
+      The workflow name "dream-state" is NOT product scope — do not describe dream-tracking apps,
+      journaling products, or therapy tools unless sources explicitly state them.
+
+      Rules — apply in order:
+        DEDUPLICATE  Same fact in multiple planes → keep once in the best section.
+        RECONCILE    Contradictions → keep [HIGH]; note ⚠ previously stated: <old>.
+        PRUNE        Drop uncorroborated [LOW] unless it matters for safety.
+        SURFACE      Strong agreement across planes but missing from old memory → ✨ New.
+        PRESERVE     Keep original [HIGH] unless contradicted by current evidence.
+
+      Required sections:
+
+        # Project Overview
+        # Code Structure
+        # Conventions & Tooling
+        # Active Decisions & Open Questions
+        # Changelog
+
+      Changelog: what changed vs prior memory (added / removed / reconciled).
+
+      Write for a developer cold-starting the repo. This run is fully automated — produce a
+      publication-ready draft; the user may promote to CLAUDE.md later.
+    depends_on: [analyze_code_structure, analyze_product_intent, analyze_conventions]
+    gate: auto
+    on_failure: retry
+    context_budget: 12000
+    model: DeepSeek V4 Pro
+
+  # ─── Wave 3: propose next Bronson workflows (self-improve loop) ───────────
+
+  draft_agent_workflows:
+    prompt: |
+      You design NEW Bronson orchestrator workflows so this project can keep improving itself.
+
+      Bronson YAML shape (must be valid structure):
+        name: <workflow_name>
+        jobs:
+          <job_id>:
+            prompt: |
+              ...
+            depends_on: [...]
+            gate: auto
+            model: <exact CLōD model id>
+            tools: [] or [shell] or [workspace_write] or both
+            context_budget: <int>
+            tool_rounds_max: <int>
+            on_failure: retry
+
+      From context you have: consolidated memory + analyses + scans.
+
+      Produce exactly TWO workflow proposals tailored to THIS repo:
+
+        1) memory_hygiene — periodic cleanup / dedupe of memory docs, sync skills
+        2) capability_build — concrete automation (tests, orchestrator, docs)
+
+      Output format (required — emit step parses these markers):
+
+        <<<YAML_MEMORY_HYGIENE>>>
+        name: memory_hygiene
+        jobs:
+          ...
+        <<<END_YAML_MEMORY_HYGIENE>>>
+
+        <<<YAML_CAPABILITY>>>
+        name: capability_build
+        jobs:
+          ...
+        <<<END_YAML_CAPABILITY>>>
+
+      Before each block, 3–5 bullet rationale. Each YAML: snake_case job ids, gate: auto only,
+      no human gates, non-destructive. Prefer shell or workspace_write per job. Models must be valid CLōD ids.
+
+      No markdown fences around YAML — raw YAML only inside the markers.
+
+      Your final assistant message MUST contain the <<<YAML_*>>> marker blocks as visible text (not tool-only).
+      If upstream draft context is empty, still emit minimal placeholder YAML inside each marker explaining why.
+
+      For capability_build, include YAML comments showing how automation could POST this workflow to the
+      orchestrator (POST /api/runs with JSON body containing the workflow YAML) and mention the web UI
+      schedule preference key bronson.workflowSchedule.v1 for runners that POST on a cadence.
+
+      Do NOT end after one introductory sentence. The bulk of your reply MUST be the two marker blocks with
+      real YAML bodies (at least name, jobs, and one job each). Prose before markers should be under 80 words.
+    depends_on: [consolidate]
+    gate: auto
+    on_failure: retry
+    max_retries: 2
+    context_budget: 14000
+    model: DeepSeek V4 Pro
+
+  # ─── Wave 4: write artifacts to disk (still never touches source memory) ───
+
+  emit_artifacts:
+    prompt: |
+      Use the workspace_write tool only (no shell). Each call: path = relative under TOOL_SHELL_CWD,
+      content = full UTF-8 file body. Parent directories are created automatically.
+
+      Context contains:
+        - consolidate → canonical Markdown memory (full body)
+        - draft_agent_workflows → text that may include <<<YAML_MEMORY_HYGIENE>>> … <<<END_YAML_MEMORY_HYGIENE>>>
+          and <<<YAML_CAPABILITY>>> … <<<END_YAML_CAPABILITY>>>
+
+      Never modify CLAUDE.md, .cursor/memory.md, or existing memory sources.
+
+      Steps:
+        1) workspace_write path .dream/memory-output.md — exact consolidate Markdown only.
+
+        2) From draft_agent_workflows text, extract YAML between MEMORY_HYGIENE markers (if present).
+           workspace_write path .dream/proposed/memory-hygiene.yaml
+
+        3) Extract YAML between CAPABILITY markers; workspace_write path .dream/proposed/capability-build.yaml
+
+        4) workspace_write path .dream/proposed/README.md (8–12 lines): artifacts, POST /api/runs,
+           bronson.workflowSchedule.v1, promote from examples/.
+
+      If markers are missing, workspace_write .dream/proposed/draft-raw.txt with full draft_agent_workflows text.
+
+      End your final assistant message with exactly:
+        DREAM COMPLETE — artifacts under .dream/
+    depends_on: [consolidate, draft_agent_workflows]
+    tools: [workspace_write]
+    tool_rounds_max: 16
+    gate: auto
+    on_failure: retry
+    context_budget: 16000
+    model: DeepSeek V3.2

@@ -1,5 +1,6 @@
 import type OpenAI from "openai";
 import { executeShellCommand, isShellToolEnabled } from "./shell-tool.js";
+import { executeWorkspaceWrite, isWorkspaceWriteEnabled } from "./workspace-write-tool.js";
 
 export type ToolExecutor = (args: Record<string, unknown>) => Promise<string>;
 
@@ -8,7 +9,7 @@ const shellDefinition: OpenAI.Chat.ChatCompletionTool = {
   function: {
     name: "shell",
     description:
-      "Execute one shell command on the orchestrator host (stdout/stderr captured). POC only; requires ALLOW_SHELL_TOOL=true.",
+      "Execute one shell command on the orchestrator host (stdout/stderr captured). Optional stdin avoids quoting huge payloads in the command line. POC only; requires ALLOW_SHELL_TOOL=true.",
     parameters: {
       type: "object",
       properties: {
@@ -16,8 +17,36 @@ const shellDefinition: OpenAI.Chat.ChatCompletionTool = {
           type: "string",
           description: "Single shell command line to run (platform shell).",
         },
+        stdin: {
+          type: "string",
+          description:
+            "Optional UTF-8 text fed to process stdin (pipe). Use for scripts too large or fragile for inline quoting.",
+        },
       },
       required: ["command"],
+    },
+  },
+};
+
+const workspaceWriteDefinition: OpenAI.Chat.ChatCompletionTool = {
+  type: "function",
+  function: {
+    name: "workspace_write",
+    description:
+      "Write a UTF-8 text file under TOOL_SHELL_CWD without shell quoting. Path must be relative (no .. escapes). Safer than shell for saving drafts.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Relative path under the workspace root (e.g. essay-draft.txt).",
+        },
+        content: {
+          type: "string",
+          description: "Full file contents as UTF-8 text.",
+        },
+      },
+      required: ["path", "content"],
     },
   },
 };
@@ -25,7 +54,17 @@ const shellDefinition: OpenAI.Chat.ChatCompletionTool = {
 async function shellExecutor(args: Record<string, unknown>): Promise<string> {
   const command = args.command;
   if (typeof command !== "string") throw new Error("shell tool expects string `command`");
-  return executeShellCommand(command);
+  const stdin = args.stdin;
+  if (stdin !== undefined && typeof stdin !== "string") throw new Error("shell tool `stdin` must be a string");
+  return executeShellCommand(command, stdin !== undefined ? { stdin } : undefined);
+}
+
+async function workspaceWriteExecutor(args: Record<string, unknown>): Promise<string> {
+  const rel = args.path;
+  const content = args.content;
+  if (typeof rel !== "string") throw new Error("workspace_write expects string `path`");
+  if (typeof content !== "string") throw new Error("workspace_write expects string `content`");
+  return executeWorkspaceWrite({ path: rel, content });
 }
 
 export interface ResolvedTools {
@@ -50,8 +89,16 @@ export function resolveTools(names: string[]): ResolvedTools {
       }
       tools.push(shellDefinition);
       execute.set("shell", shellExecutor);
+    } else if (name === "workspace_write") {
+      if (!isWorkspaceWriteEnabled()) {
+        throw new Error(
+          'Job lists tools: [workspace_write] but workspace writes are disabled (set ALLOW_WORKSPACE_WRITE=true or ALLOW_SHELL_TOOL=true).',
+        );
+      }
+      tools.push(workspaceWriteDefinition);
+      execute.set("workspace_write", workspaceWriteExecutor);
     } else {
-      throw new Error(`Unknown tool "${name}". POC supports only: shell`);
+      throw new Error(`Unknown tool "${name}". POC supports: shell, workspace_write`);
     }
   }
 
