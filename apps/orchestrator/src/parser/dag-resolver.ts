@@ -1,4 +1,4 @@
-import { WorkflowConfig } from "../types/index.js";
+import { WorkflowConfig } from "@bronson/types";
 
 export interface DAGNode {
   jobId: string; dependencies: string[]; dependents: string[];

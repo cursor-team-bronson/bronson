@@ -1,6 +1,6 @@
 import fs from "fs";
 import yaml from "js-yaml";
-import { WorkflowConfig, WorkflowConfigSchema } from "../types/index.js";
+import { WorkflowConfig, WorkflowConfigSchema } from "@bronson/types";
 
 export function parseWorkflowFile(filePath: string): WorkflowConfig {
   const raw = fs.readFileSync(filePath, "utf-8");
