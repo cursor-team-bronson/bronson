@@ -1,0 +1,13 @@
+# One-shot test: POST body as YAML. For every 2 minutes + file append + RunCount, run: .\run-hello-world-ticker.ps1
+name: hello-world-ticker
+
+jobs:
+  emit_status:
+    prompt: |
+      Output exactly three lines of plain text only (no markdown, no blank lines before or after).
+      Line 1: Hello World
+      Line 2: Time: <ISO-8601 UTC timestamp for the current moment>
+      Line 3: RunCount: 1
+    model: deepseek-v3
+    gate: auto
+    context_budget: 400
