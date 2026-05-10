@@ -76,9 +76,6 @@ await test("settled flag resets after fast-path — second cycle blocks", async 
   budgetTracker.topUp("r4", "j1", 0.05);
   await budgetTracker.waitForFunding("r4", "j1");
 
-  // Allow microtask to clear settled in topUp path
-  await new Promise(r => setTimeout(r, 10));
-
   // Second cycle: exceed again — waitForFunding should NOT resolve instantly
   try { await budgetTracker.deduct("r4", "j1", 0.50); } catch {}
 
@@ -149,22 +146,149 @@ await test("listAwaiting returns clean DTOs without internal state", async () =>
   }
 
   // Clean up
-  budgetTracker.topUp("r7", "j1", 1);
-  budgetTracker.topUp("r7", "j2", 1);
+  budgetTracker.topUp("r7", "j1", 1, "cleanup-r7-j1");
+  budgetTracker.topUp("r7", "j2", 1, "cleanup-r7-j2");
   await Promise.all([p1, p2]);
 });
 
-await test("duplicate topUp is idempotent", async () => {
+await test("duplicate topUp with same intentId is idempotent", async () => {
   budgetTracker.register("r8", "j1", 0.01);
   try { await budgetTracker.deduct("r8", "j1", 0.02); } catch {}
 
-  budgetTracker.topUp("r8", "j1", 0.05);
-  // Second call should be a no-op, not throw
-  budgetTracker.topUp("r8", "j1", 0.05);
+  budgetTracker.topUp("r8", "j1", 0.05, "intent-abc-123");
+  // Duplicate webhook delivery — same intentId should be a no-op
+  budgetTracker.topUp("r8", "j1", 0.05, "intent-abc-123");
 
   const state = budgetTracker.getState("r8", "j1");
   // spentUsd should only be decremented once
   assert.ok(state!.spentUsd >= -0.04, `spentUsd should reflect single topUp, got ${state!.spentUsd}`);
+});
+
+await test("duplicate webhook retry minutes later still rejected by intentId", async () => {
+  budgetTracker.register("r9", "j1", 0.10);
+  try { await budgetTracker.deduct("r9", "j1", 0.20); } catch {}
+
+  const p = budgetTracker.waitForFunding("r9", "j1", 5000);
+  budgetTracker.topUp("r9", "j1", 0.10, "intent-retry-test");
+  await p;
+
+  // Job continues, exceeds budget again in a second cycle
+  try { await budgetTracker.deduct("r9", "j1", 0.50); } catch {}
+  const p2 = budgetTracker.waitForFunding("r9", "j1", 500);
+
+  // Late retry of the FIRST webhook — same intent ID
+  budgetTracker.topUp("r9", "j1", 0.10, "intent-retry-test");
+
+  // Should NOT have resolved — the duplicate was rejected
+  let resolved = false;
+  p2.then(() => { resolved = true; }).catch(() => {});
+  await new Promise(r => setTimeout(r, 50));
+  assert.strictEqual(resolved, false, "Late duplicate webhook should not resolve second funding gate");
+
+  // Fund with a fresh intent to clean up
+  budgetTracker.topUp("r9", "j1", 1.0, "intent-fresh");
+  await p2;
+});
+
+// ─── Additional edge case tests ───────────────────────────────
+
+await test("normal path: waitForFunding called first, then topUp resolves it, second cycle blocks", async () => {
+  budgetTracker.register("r10", "j1", 0.01);
+  try { await budgetTracker.deduct("r10", "j1", 0.02); } catch {}
+
+  // Normal path: wait first, then fund
+  const p = budgetTracker.waitForFunding("r10", "j1", 5000);
+  setTimeout(() => budgetTracker.topUp("r10", "j1", 0.05, "intent-r10-1"), 20);
+  await p;
+
+  // Second cycle: exceed again — should block
+  try { await budgetTracker.deduct("r10", "j1", 0.50); } catch {}
+
+  let resolved = false;
+  const p2 = budgetTracker.waitForFunding("r10", "j1", 300).then(() => {
+    resolved = true;
+  }).catch(() => {});
+
+  await new Promise(r => setTimeout(r, 50));
+  assert.strictEqual(resolved, false, "Second cycle should block after normal-path resolve");
+
+  budgetTracker.topUp("r10", "j1", 1.0, "intent-r10-2");
+  await p2;
+});
+
+await test("empty string intentId is treated as no intentId (no dedup)", async () => {
+  budgetTracker.register("r11", "j1", 0.01);
+  try { await budgetTracker.deduct("r11", "j1", 0.02); } catch {}
+
+  // First topUp with empty string — should work
+  const result1 = budgetTracker.topUp("r11", "j1", 0.05, "");
+  assert.strictEqual(result1, true, "Empty string intentId should be treated as no intentId");
+
+  await budgetTracker.waitForFunding("r11", "j1");
+});
+
+await test("topUp returns false for duplicate intentId", async () => {
+  budgetTracker.register("r12", "j1", 0.01);
+  try { await budgetTracker.deduct("r12", "j1", 0.02); } catch {}
+
+  const first = budgetTracker.topUp("r12", "j1", 0.05, "intent-r12");
+  assert.strictEqual(first, true, "First topUp should return true");
+
+  const second = budgetTracker.topUp("r12", "j1", 0.05, "intent-r12");
+  assert.strictEqual(second, false, "Duplicate topUp should return false");
+
+  await budgetTracker.waitForFunding("r12", "j1");
+});
+
+await test("topUp without intentId allows multiple calls (by design)", async () => {
+  budgetTracker.register("r13", "j1", 0.01);
+  try { await budgetTracker.deduct("r13", "j1", 0.02); } catch {}
+
+  // First topUp without intentId — works
+  const first = budgetTracker.topUp("r13", "j1", 0.01);
+  assert.strictEqual(first, true);
+
+  await budgetTracker.waitForFunding("r13", "j1");
+
+  // Second cycle
+  try { await budgetTracker.deduct("r13", "j1", 0.50); } catch {}
+
+  // Second topUp without intentId — also works (no dedup without intentId)
+  const p = budgetTracker.waitForFunding("r13", "j1", 5000);
+  setTimeout(() => {
+    const second = budgetTracker.topUp("r13", "j1", 1.0);
+    assert.strictEqual(second, true, "Second topUp without intentId should work");
+  }, 20);
+  await p;
+});
+
+await test("cancelFunding after topUp race — cancel is a no-op", async () => {
+  budgetTracker.register("r14", "j1", 0.01);
+  try { await budgetTracker.deduct("r14", "j1", 0.02); } catch {}
+
+  // topUp arrives first (race)
+  budgetTracker.topUp("r14", "j1", 0.05, "intent-r14");
+
+  // Cancel arrives after — should be a no-op since topUp already cleared resolve/reject
+  budgetTracker.cancelFunding("r14", "j1", "too late");
+
+  // waitForFunding should still resolve via fast-path
+  const timeout = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error("DEADLOCK after cancel")), 500),
+  );
+  await Promise.race([budgetTracker.waitForFunding("r14", "j1"), timeout]);
+});
+
+await test("deduct with zero cost does not throw", async () => {
+  budgetTracker.register("r15", "j1", 1.0);
+  await budgetTracker.deduct("r15", "j1", 0);
+  await budgetTracker.deduct("r15", "j1", 0);
+  const state = budgetTracker.getState("r15", "j1");
+  assert.strictEqual(state!.spentUsd, 0);
+});
+
+await test("deduct on unregistered job is a silent no-op", async () => {
+  await budgetTracker.deduct("nonexistent", "nope", 100);
 });
 
 // ─── Summary ──────────────────────────────────────────────────

@@ -5,6 +5,19 @@ export const WORKFLOW_YAML_STORAGE_KEY = "bronson.workflowYaml.v1";
 /** Browser-local preferred cadence for external cron / CI runners (POST /api/runs). */
 export const BRONSON_WORKFLOW_SCHEDULE_KEY = "bronson.workflowSchedule.v1";
 
+/** Last orchestrator run id — used to refetch job outputs after reload when persistence is on. */
+export const LAST_MODEL_RUN_ID_STORAGE_KEY = "bronson.modelRunner.lastRunId.v1";
+
+export function readStoredWorkflowYaml(): string {
+  try {
+    const s = localStorage.getItem(WORKFLOW_YAML_STORAGE_KEY);
+    if (s?.trim()) return s;
+  } catch {
+    /* ignore */
+  }
+  return starterYaml;
+}
+
 export const starterYaml = `name: fan-out-agents-workflow
 steps:
   - id: plan-task
@@ -55,8 +68,8 @@ export const essayWorkflowYaml = String.raw`# Essay writer / reviewer — three 
 # Prerequisites (apps/orchestrator/.env):
 #   ALLOW_SHELL_TOOL=true
 #     (enables workspace_write by default — see ALLOW_WORKSPACE_WRITE below)
-#   TOOL_SHELL_CWD=C:\Users\julie\bronson\examples\essay-workspace
-#     (workspace root for workspace_write; must match paths you care about)
+#   TOOL_SHELL_CWD=<repo>/examples/essay-workspace
+#     (workspace root for workspace_write; writers use essay-draft.txt relative to this cwd)
 #
 # Optional:
 #   ALLOW_WORKSPACE_WRITE=false   — disable direct file writes while keeping shell (default: same as ALLOW_SHELL_TOOL)
@@ -69,8 +82,7 @@ export const essayWorkflowYaml = String.raw`# Essay writer / reviewer — three 
 # (DeepSeek V3.2 → write 1, Gemma 3N → review 1, DeepSeek V3.2 → write 2, Llama 3.3 Turbo → review 2,
 # DeepSeek V4 Pro → write 3, Meta Llama 3.3 70B → final review.)
 #
-# Edit C:\Users\julie\bronson\examples\essay-workspace if you want a different folder;
-# keep TOOL_SHELL_CWD in sync.
+# Change TOOL_SHELL_CWD if you use a different workspace; keep paths relative to that cwd.
 
 name: essay-write-review-3cycles
 

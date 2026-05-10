@@ -64,7 +64,7 @@ export interface RunState {
 }
 
 export type EventType =
-  | "RUN_STARTED" | "JOB_STARTED" | "JOB_COMPLETED" | "JOB_FAILED"
+  | "RUN_STARTED" | "RUN_RESUMED" | "JOB_STARTED" | "JOB_COMPLETED" | "JOB_FAILED"
   | "JOB_RETRY_WARNING" | "GATE_PENDING" | "GATE_APPROVED" | "GATE_REJECTED"
   | "BUDGET_EXCEEDED" | "BUDGET_FUNDED" | "JOB_RESUMED"
   | "RUN_COMPLETED" | "RUN_FAILED";
@@ -92,9 +92,16 @@ export interface AgentRunOptions {
   priorAttemptErrors?: string[];
   /** Per dependency: successful output vs failure transcript from event log. */
   upstreamKind?: Record<string, UpstreamKind>;
+  /** When aborted, in-flight chat.completions calls are cancelled (OpenAI SDK). */
+  abortSignal?: AbortSignal;
 }
 export interface AgentRunResult {
-  output: string; tokensUsed: number; costUsd: number;
+  output: string;
+  tokensUsed: number;
+  costUsd: number;
+  /** Present when the provider returned usage breakdown (e.g. OpenAI-compatible APIs). */
+  promptTokens?: number;
+  completionTokens?: number;
 }
 
 export interface BudgetExceededInfo {

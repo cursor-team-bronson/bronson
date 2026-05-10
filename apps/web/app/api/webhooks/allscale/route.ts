@@ -69,6 +69,7 @@ export async function POST(req: Request): Promise<Response> {
     amount_coins?: string;
     tx_hash?: string;
     payment_status?: number;
+    allscale_checkout_intent_id?: string;
   };
 
   // Only act on confirmed USDC payments
@@ -102,7 +103,7 @@ export async function POST(req: Request): Promise<Response> {
     const res = await fetch(`${ORCHESTRATOR}/api/runs/${runId}/jobs/${jobId}/fund`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ amountUsd }),
+      body: JSON.stringify({ amountUsd, intentId: payload.allscale_checkout_intent_id }),
     });
 
     if (!res.ok) {
