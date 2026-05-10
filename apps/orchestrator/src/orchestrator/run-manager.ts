@@ -165,48 +165,53 @@ export async function continuePersistedRun(runId: string): Promise<RunState | nu
 
   runs.delete(rid);
 
-  const snap = await fetchRunSnapshot(rid);
-  if (!snap) return abandonClaim();
-
-  let config: WorkflowConfig;
   try {
-    config = parseWorkflowString(snap.workflow_yaml);
-  } catch {
+    const snap = await fetchRunSnapshot(rid);
+    if (!snap) return abandonClaim();
+
+    let config: WorkflowConfig;
+    try {
+      config = parseWorkflowString(snap.workflow_yaml);
+    } catch {
+      return abandonClaim();
+    }
+
+    const run = (await hydrateRunFromDb(rid)) ?? undefined;
+    if (!run) return abandonClaim();
+
+    const allDone = Object.values(run.jobs).every((j) => j.status === "completed" || j.status === "skipped");
+    if (allDone) return abandonClaim();
+
+    const hasIncomplete = Object.values(run.jobs).some(
+      (j) =>
+        j.status === "pending" ||
+        j.status === "running" ||
+        j.status === "gate_pending" ||
+        j.status === "gate_approved",
+    );
+    if (!hasIncomplete) return abandonClaim();
+
+    normalizeJobsForResume(run);
+    run.status = "running";
+    delete run.completedAt;
+    void persistRunStatus(rid, "running");
+    await persistRunStart(rid, config.name, snap.workflow_yaml);
+    appendRunEvent(rid, "RUN_RESUMED", undefined, { workflowName: config.name });
+
+    const dag = resolveDAG(config);
+    const p = resumeExecuteRun(run, config, dag.executionWaves).catch((err) => {
+      run.status = "failed";
+      appendRunEvent(rid, "RUN_FAILED", undefined, { error: String(err) });
+      void persistRunStatus(rid, "failed");
+    });
+    trackRunExecution(rid, p);
+    releaseClaim();
+
+    return run;
+  } catch (e) {
+    console.error("[bronson] continuePersistedRun:", e);
     return abandonClaim();
   }
-
-  const run = (await hydrateRunFromDb(rid)) ?? undefined;
-  if (!run) return abandonClaim();
-
-  const allDone = Object.values(run.jobs).every((j) => j.status === "completed" || j.status === "skipped");
-  if (allDone) return abandonClaim();
-
-  const hasIncomplete = Object.values(run.jobs).some(
-    (j) =>
-      j.status === "pending" ||
-      j.status === "running" ||
-      j.status === "gate_pending" ||
-      j.status === "gate_approved",
-  );
-  if (!hasIncomplete) return abandonClaim();
-
-  normalizeJobsForResume(run);
-  run.status = "running";
-  delete run.completedAt;
-  void persistRunStatus(rid, "running");
-  await persistRunStart(rid, config.name, snap.workflow_yaml);
-  appendRunEvent(rid, "RUN_RESUMED", undefined, { workflowName: config.name });
-
-  const dag = resolveDAG(config);
-  const p = resumeExecuteRun(run, config, dag.executionWaves).catch((err) => {
-    run.status = "failed";
-    appendRunEvent(rid, "RUN_FAILED", undefined, { error: String(err) });
-    void persistRunStatus(rid, "failed");
-  });
-  trackRunExecution(rid, p);
-  releaseClaim();
-
-  return run;
 }
 
 function cancelAwaitingJobs(run: RunState, reason: string): void {
@@ -337,46 +342,51 @@ export async function retryJobAndContinue(
     return { error };
   };
 
-  let run = getRun(runId);
-  if (!run) run = (await hydrateRunFromDb(runId)) ?? undefined;
-  if (!run) return abandonClaim("Run not found");
-
-  const snap = await fetchRunSnapshot(runId);
-  if (!snap) return abandonClaim("Run snapshot not found in database");
-
-  let config: WorkflowConfig;
   try {
-    config = parseWorkflowString(snap.workflow_yaml);
+    let run = getRun(runId);
+    if (!run) run = (await hydrateRunFromDb(runId)) ?? undefined;
+    if (!run) return abandonClaim("Run not found");
+
+    const snap = await fetchRunSnapshot(runId);
+    if (!snap) return abandonClaim("Run snapshot not found in database");
+
+    let config: WorkflowConfig;
+    try {
+      config = parseWorkflowString(snap.workflow_yaml);
+    } catch (e) {
+      return abandonClaim(String(e));
+    }
+
+    if (!run.jobs[jobId]) return abandonClaim("Unknown job id");
+    if (run.jobs[jobId].status !== "failed") {
+      return abandonClaim(`Job is not failed (status=${run.jobs[jobId].status}); only failed jobs can be retried.`);
+    }
+
+    run.jobs[jobId] = { jobId, status: "pending", retryCount: 0 };
+    run.status = "running";
+    delete run.completedAt;
+
+    const runRef = run;
+    const p = (async () => {
+      try {
+        await executeJob(runRef, config, jobId);
+        if (runRef.jobs[jobId].status === "completed") {
+          await runReadyDependents(runRef, config, jobId);
+        }
+        applyRunTerminalState(runRef, config);
+      } catch (e) {
+        console.error("[bronson] retryJobAndContinue:", e);
+      }
+    })();
+
+    trackRunExecution(runId, p);
+    releaseClaim();
+
+    return { ok: true };
   } catch (e) {
+    console.error("[bronson] retryJobAndContinue (claim setup):", e);
     return abandonClaim(String(e));
   }
-
-  if (!run.jobs[jobId]) return abandonClaim("Unknown job id");
-  if (run.jobs[jobId].status !== "failed") {
-    return abandonClaim(`Job is not failed (status=${run.jobs[jobId].status}); only failed jobs can be retried.`);
-  }
-
-  run.jobs[jobId] = { jobId, status: "pending", retryCount: 0 };
-  run.status = "running";
-  delete run.completedAt;
-
-  const runRef = run;
-  const p = (async () => {
-    try {
-      await executeJob(runRef, config, jobId);
-      if (runRef.jobs[jobId].status === "completed") {
-        await runReadyDependents(runRef, config, jobId);
-      }
-      applyRunTerminalState(runRef, config);
-    } catch (e) {
-      console.error("[bronson] retryJobAndContinue:", e);
-    }
-  })();
-
-  trackRunExecution(runId, p);
-  releaseClaim();
-
-  return { ok: true };
 }
 
 async function executeJob(run: RunState, config: WorkflowConfig, jobId: string): Promise<void> {
