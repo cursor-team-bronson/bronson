@@ -6,9 +6,9 @@ import {
   retryJobAndContinue,
   ensureRunLoaded,
   continuePersistedRun,
+  getRun,
 } from "../orchestrator/run-manager.js";
 import { stopJobRequest } from "../orchestrator/job-abort-registry.js";
-import { startRun, getRun, listRuns, topUpJobBudget, cancelJobFunding } from "../orchestrator/run-manager.js";
 import { gateManager } from "../gates/gate-manager.js";
 import { eventLog } from "../event-log/event-log.js";
 import { streamRunEvents } from "./sse.js";
