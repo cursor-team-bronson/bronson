@@ -36,14 +36,18 @@ export interface JobState {
 }
 
 export interface RunState {
-  runId: string; workflowName: string; status: RunStatus;
-  createdAt: string; completedAt?: string;
+  runId: string; 
+  workflowName: string; 
+  status: RunStatus;
+  createdAt: string; 
+  completedAt?: string;
   jobs: Record<string, JobState>;
+  dag?: SerializedDAG;
 }
 
 export type EventType =
   | "RUN_STARTED" | "JOB_STARTED" | "JOB_COMPLETED" | "JOB_FAILED"
-  | "GATE_PENDING" | "GATE_APPROVED" | "GATE_REJECTED"
+  | "JOB_RETRY_WARNING" | "GATE_PENDING" | "GATE_APPROVED" | "GATE_REJECTED"
   | "RUN_COMPLETED" | "RUN_FAILED";
 
 export interface RunEvent {
@@ -65,4 +69,15 @@ export interface AgentRunOptions {
 }
 export interface AgentRunResult {
   output: string; tokensUsed: number; costUsd: number;
+}
+
+export interface SerializedDAGNode {
+  jobId: string;
+  dependencies: string[];
+  dependents: string[];
+}
+
+export interface SerializedDAG {
+  nodes: SerializedDAGNode[];
+  executionWaves: string[][];
 }
