@@ -21,8 +21,35 @@ import {
 } from "../persist/supabase-sync.js";
 import { budgetTracker } from "../orchestrator/budget-tracker.js";
 import { generateWorkflow } from "../meta-agent/yaml-generator.js";
+import {
+  addSchedule,
+  cancelSchedule,
+  listSchedules,
+} from "../scheduler/workflow-scheduler.js";
 
 export const router = Router();
+
+router.get("/schedule", (_req, res) => {
+  res.json({ schedules: listSchedules() });
+});
+
+router.post("/schedule", (req, res) => {
+  try {
+    const body = req.body as { yaml?: unknown; runAt?: unknown; label?: unknown };
+    res.status(201).json(addSchedule(body));
+  } catch (err) {
+    res.status(400).json({ error: String(err) });
+  }
+});
+
+router.delete("/schedule/:id", (req, res) => {
+  const ok = cancelSchedule(req.params.id);
+  if (!ok) {
+    res.status(404).json({ error: "Schedule not found or not pending" });
+    return;
+  }
+  res.json({ ok: true });
+});
 
 router.post("/runs", async (req: Request, res: Response) => {
   try {

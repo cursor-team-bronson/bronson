@@ -44,9 +44,9 @@ export async function runAgent(
   options: AgentRunOptions,
   upstreamOutputs: Record<string, string>,
 ): Promise<AgentRunResult> {
-  const { jobId, jobConfig } = options;
+  const { jobId, jobConfig, abortSignal } = options;
   const contextSection = buildJobContext(upstreamOutputs, jobConfig.context_budget);
-  const userMessage = contextSection
+  let userMessage = contextSection
     ? `${contextSection}\n\n---\n\n${jobConfig.prompt}`
     : jobConfig.prompt;
 

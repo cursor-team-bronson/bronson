@@ -4,6 +4,7 @@ import express from "express";
 import cors from "cors";
 import { router } from "./api/routes.js";
 import { assertClodConfigured } from "./agent-runner/clod-client.js";
+import { startWorkflowScheduler } from "./scheduler/workflow-scheduler.js";
 
 assertClodConfigured();
 
@@ -90,6 +91,7 @@ function startListen(): void {
       );
     }
     console.log(`Bronson orchestrator running on http://localhost:${port}`);
+    startWorkflowScheduler();
   });
 }
 
