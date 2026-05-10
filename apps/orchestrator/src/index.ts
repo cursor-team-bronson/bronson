@@ -1,30 +1,27 @@
-import fs from "fs";
-import path from "path";
-import { config as loadEnv } from "dotenv";
+import { loadedEnvPaths } from "./bootstrap-env.js";
 import express from "express";
 import cors from "cors";
 import { router } from "./api/routes.js";
 import { assertClodConfigured } from "./agent-runner/clod-client.js";
-
-(() => {
-  const cwd = process.cwd();
-  const candidates = [
-    path.join(cwd, ".env"),
-    path.join(cwd, "apps", "orchestrator", ".env"),
-  ];
-  if (path.basename(cwd) === "orchestrator") {
-    candidates.push(path.join(cwd, "..", "..", ".env"));
-  }
-  for (const p of candidates) {
-    if (fs.existsSync(p)) {
-      loadEnv({ path: p });
-      return;
-    }
-  }
-  loadEnv();
-})();
-
 assertClodConfigured();
+
+const modelFromEnv =
+  process.env.DEFAULT_AGENT_MODEL?.trim() ||
+  process.env.CLOD_DEFAULT_MODEL?.trim() ||
+  "";
+
+console.log("[bronson] Loaded .env files:", loadedEnvPaths.join(", ") || "(dotenv default search)");
+console.log(
+  "[bronson] CLōD endpoint:",
+  process.env.CLOD_BASE_URL?.trim() || "https://api.clod.io/v1 (default)",
+);
+console.log("[bronson] Default model:", JSON.stringify(modelFromEnv || "(none — set DEFAULT_AGENT_MODEL)"));
+console.log(
+  "[bronson] CLOD_API_KEY:",
+  process.env.CLOD_API_KEY?.trim()
+    ? `present (${process.env.CLOD_API_KEY.length} chars)`
+    : "MISSING",
+);
 
 const app = express();
 app.use(cors());

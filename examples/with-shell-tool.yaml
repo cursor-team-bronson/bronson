@@ -1,0 +1,13 @@
+# POC: CLōD function-calling + server shell tool.
+# Requires orchestrator env ALLOW_SHELL_TOOL=true (see apps/orchestrator/.env.example).
+name: shell-tool-smoke
+
+jobs:
+  probe:
+    prompt: |
+      Use the shell tool once to run a harmless command that prints a short line of text
+      (for example: echo a fixed marker). Then summarize what you saw in one sentence.
+    tools: [shell]
+    tool_rounds_max: 8
+    gate: auto
+    context_budget: 1500

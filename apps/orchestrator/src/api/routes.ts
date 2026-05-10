@@ -1,5 +1,5 @@
 import { Router, Request, Response } from "express";
-import { parseWorkflowString } from "../parser/yaml-parser.js";
+import { normalizeWorkflowYamlInput, parseWorkflowString } from "../parser/yaml-parser.js";
 import { startRun, getRun, listRuns } from "../orchestrator/run-manager.js";
 import { gateManager } from "../gates/gate-manager.js";
 import { eventLog } from "../event-log/event-log.js";
@@ -9,9 +9,12 @@ export const router = Router();
 
 router.post("/runs", async (req: Request, res: Response) => {
   try {
-    const { yaml } = req.body as { yaml?: string };
-    if (!yaml) { res.status(400).json({ error: "yaml field required" }); return; }
-    res.status(201).json(await startRun(parseWorkflowString(yaml)));
+    const yamlStr = normalizeWorkflowYamlInput((req.body as { yaml?: unknown }).yaml);
+    if (!yamlStr.trim()) {
+      res.status(400).json({ error: "yaml field required" });
+      return;
+    }
+    res.status(201).json(await startRun(parseWorkflowString(yamlStr)));
   } catch (err) { res.status(400).json({ error: String(err) }); }
 });
 

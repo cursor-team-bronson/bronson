@@ -1,13 +1,32 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { JobStatus, RunState } from "@bronson/types";
 import { Button } from "@/components/ui/button";
-import { parseDag, starterYaml, WORKFLOW_YAML_STORAGE_KEY } from "@/lib/workflow-yaml";
+import {
+  parseDag,
+  starterYaml,
+  toOrchestratorWorkflowYaml,
+  WORKFLOW_YAML_STORAGE_KEY,
+} from "@/lib/workflow-yaml";
 
 type StepStatus = "idle" | "running" | "ok" | "error";
 
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function mapJobStatus(s: JobStatus): StepStatus {
+  switch (s) {
+    case "completed":
+      return "ok";
+    case "failed":
+      return "error";
+    case "running":
+    case "gate_pending":
+    case "gate_approved":
+      return "running";
+    case "skipped":
+    case "pending":
+    default:
+      return "idle";
+  }
 }
 
 function StatusLight({ status }: { status: StepStatus }) {
@@ -41,7 +60,9 @@ export default function RunPage() {
   const [yamlText, setYamlText] = useState(starterYaml);
   const [statusByStep, setStatusByStep] = useState<Record<string, StepStatus>>({});
   const [isRunning, setIsRunning] = useState(false);
+  const [runError, setRunError] = useState<string | null>(null);
   const abortRef = useRef(false);
+  const eventSourceRef = useRef<EventSource | null>(null);
 
   const loadFromStorage = useCallback(() => {
     try {
@@ -77,44 +98,114 @@ export default function RunPage() {
 
   const stop = useCallback(() => {
     abortRef.current = true;
+    eventSourceRef.current?.close();
+    eventSourceRef.current = null;
+    setIsRunning(false);
   }, []);
 
   const run = useCallback(async () => {
     if (!runnable || isRunning) return;
+
+    const converted = toOrchestratorWorkflowYaml(yamlText);
+    if (!converted.ok) {
+      setRunError(converted.error);
+      return;
+    }
+
     abortRef.current = false;
+    setRunError(null);
     setIsRunning(true);
+
     const idle: Record<string, StepStatus> = {};
     for (const id of graph.nodes) idle[id] = "idle";
     setStatusByStep(idle);
 
-    for (const stepId of order) {
-      if (abortRef.current) {
-        setStatusByStep((prev) => {
-          const copy = { ...prev };
-          for (const id of graph.nodes) {
-            if (copy[id] === "idle" || copy[id] === "running") copy[id] = "idle";
-          }
-          return copy;
-        });
-        break;
+    let runId: string;
+    try {
+      const res = await fetch("/api/runs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ yaml: converted.yaml }),
+      });
+      if (!res.ok) {
+        const errBody = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(errBody.error ?? `${res.status} ${res.statusText}`);
       }
-
-      setStatusByStep((prev) => ({ ...prev, [stepId]: "running" }));
-      await sleep(550 + Math.floor(Math.random() * 450));
-
-      if (abortRef.current) {
-        setStatusByStep((prev) => ({ ...prev, [stepId]: "idle" }));
-        break;
-      }
-
-      const failed = Math.random() < 0.1;
-      setStatusByStep((prev) => ({ ...prev, [stepId]: failed ? "error" : "ok" }));
-      if (failed) break;
+      const started = (await res.json()) as RunState;
+      runId = started.runId;
+    } catch (e) {
+      setIsRunning(false);
+      setRunError(e instanceof Error ? e.message : String(e));
+      return;
     }
 
-    setIsRunning(false);
-    abortRef.current = false;
-  }, [graph.nodes, isRunning, order, runnable]);
+    const syncFromServer = async () => {
+      if (abortRef.current) return;
+      try {
+        const res = await fetch(`/api/runs/${runId}`);
+        if (!res.ok) return;
+        const runState = (await res.json()) as RunState;
+        setStatusByStep((prev) => {
+          const next = { ...prev };
+          for (const [jid, j] of Object.entries(runState.jobs)) {
+            next[jid] = mapJobStatus(j.status);
+          }
+          return next;
+        });
+        if (runState.status === "completed" || runState.status === "failed") {
+          setIsRunning(false);
+          eventSourceRef.current?.close();
+          eventSourceRef.current = null;
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+
+    await syncFromServer();
+
+    if (abortRef.current) {
+      setIsRunning(false);
+      return;
+    }
+
+    const es = new EventSource(`/api/runs/${runId}/events`);
+    eventSourceRef.current = es;
+
+    es.onmessage = (ev) => {
+      if (abortRef.current) return;
+      try {
+        const evt = JSON.parse(ev.data) as { type: string };
+        if (
+          evt.type === "JOB_STARTED" ||
+          evt.type === "JOB_COMPLETED" ||
+          evt.type === "JOB_FAILED" ||
+          evt.type === "JOB_RETRY_WARNING" ||
+          evt.type === "GATE_PENDING" ||
+          evt.type === "GATE_APPROVED" ||
+          evt.type === "GATE_REJECTED" ||
+          evt.type === "RUN_COMPLETED" ||
+          evt.type === "RUN_FAILED"
+        ) {
+          void syncFromServer();
+        }
+        if (evt.type === "RUN_COMPLETED" || evt.type === "RUN_FAILED") {
+          es.close();
+          if (eventSourceRef.current === es) eventSourceRef.current = null;
+          setIsRunning(false);
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+
+    es.onerror = () => {
+      es.close();
+      if (eventSourceRef.current === es) eventSourceRef.current = null;
+      if (!abortRef.current) void syncFromServer();
+      setIsRunning(false);
+    };
+  }, [graph.nodes, isRunning, runnable, yamlText]);
 
   return (
     <main className="mx-auto flex min-h-0 w-full max-w-7xl flex-1 flex-col gap-8 px-5 py-8 sm:px-8 lg:py-12">
@@ -124,9 +215,10 @@ export default function RunPage() {
             Model runner
           </h1>
           <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground">
-            Runs the workflow from the DAG editor in <strong className="font-medium text-foreground">topological order</strong>{" "}
-            (simulated steps for now). Edit YAML on the DAG page, then use <strong className="font-medium text-foreground">Reload</strong>{" "}
-            or switch tabs to refresh. About 10% of steps randomly fail so you can see the error state.
+            Posts this workflow to the Bronson orchestrator (<code className="rounded bg-muted px-1 py-0.5 text-xs">POST /api/runs</code>
+            ), which runs jobs through CLōD in DAG waves. Use YAML with <strong className="font-medium text-foreground">jobs:</strong>{" "}
+            (see <code className="text-xs">examples/hello-world-ticker.yaml</code>) or <strong className="font-medium text-foreground">steps:</strong> from the DAG
+            editor (converted automatically). Keep the orchestrator on port 3001 or set <code className="text-xs">ORCHESTRATOR_URL</code>.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -134,13 +226,20 @@ export default function RunPage() {
             Reload from editor
           </Button>
           <Button type="button" variant="destructive" size="sm" onClick={stop} disabled={!isRunning}>
-            Stop
+            Stop listening
           </Button>
           <Button type="button" onClick={run} disabled={!runnable || isRunning}>
             Run
           </Button>
         </div>
       </header>
+
+      {runError ? (
+        <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
+          <p className="font-medium">Run request failed</p>
+          <p className="mt-2 font-mono text-xs">{runError}</p>
+        </div>
+      ) : null}
 
       {graph.parseError ? (
         <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">

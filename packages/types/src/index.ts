@@ -2,11 +2,14 @@ import { z } from "zod";
 
 export const JobConfigSchema = z.object({
   prompt: z.string(),
-  model: z.string().default("deepseek-v3"),
+  /** Exact provider model id (e.g. CLōD: `DeepSeek V3`); omit to use DEFAULT_AGENT_MODEL / CLOD_DEFAULT_MODEL. */
+  model: z.string().min(1).optional(),
   depends_on: z.array(z.string()).optional().default([]),
   gate: z.enum(["auto", "human"]).default("auto"),
   context_budget: z.number().int().positive().default(2000),
   tools: z.array(z.string()).optional().default([]),
+  /** Max assistant rounds when tools are enabled (each round may include multiple tool calls). */
+  tool_rounds_max: z.number().int().min(1).max(64).default(12),
   on_failure: z.enum(["halt", "retry"]).default("halt"),
   max_retries: z.number().int().min(0).max(5).default(0),
 });
