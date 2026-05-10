@@ -40,6 +40,16 @@ class GateManager {
     g.resolve({ approved: false, reason });
   }
 
+  cancelAll(runId: string, reason: string) {
+    for (const [key, g] of this.pending) {
+      if (g.request.runId === runId && !g.settled) {
+        g.settled = true;
+        this.pending.delete(key);
+        g.resolve({ approved: false, reason });
+      }
+    }
+  }
+
   listPending(runId: string) {
     return [...this.pending.values()].filter(g => g.request.runId === runId).map(g => g.request);
   }

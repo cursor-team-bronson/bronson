@@ -112,7 +112,9 @@ export function stopRun(runId: string) {
   killed.add(runId);
   run.status = "failed";
   run.completedAt = new Date().toISOString();
+
   cancelAwaitingJobs(run, "Run killed by user");
+  gateManager.cancelAll(runId, "Run killed by user");
 
   for (const [jobId, jobState] of Object.entries(run.jobs)) {
     if (jobState.status === "running" || jobState.status === "gate_pending") {
@@ -131,6 +133,7 @@ async function executeRun(run: RunState, config: WorkflowConfig, waves: string[]
   for (const wave of waves) {
     if (killed.has(run.runId)) return;
     await Promise.all(wave.map(jobId => executeJob(run, config, jobId)));
+    if (killed.has(run.runId)) return;
     if (
       wave.some(
         jobId =>
@@ -143,6 +146,8 @@ async function executeRun(run: RunState, config: WorkflowConfig, waves: string[]
       return;
     }
   }
+
+  if (killed.has(run.runId)) return;
 
   const failedJobIds = Object.values(run.jobs).filter(j => j.status === "failed").map(j => j.jobId);
   if (failedJobIds.length > 0) {
