@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { AgentRunOptions, AgentRunResult } from "../types/index.js";
+import { AgentRunOptions, AgentRunResult } from "@bronson/types";
 import { buildJobContext } from "./context-router.js";
 import { eventLog } from "../event-log/event-log.js";
 

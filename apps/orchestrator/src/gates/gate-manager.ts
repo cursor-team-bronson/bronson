@@ -1,4 +1,4 @@
-import { GateDecision, GateRequest } from "../types/index.js";
+import { GateDecision, GateRequest } from "@bronson/types";
 
 interface PendingGate {
   request: GateRequest;

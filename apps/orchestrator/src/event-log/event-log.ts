@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from "uuid";
-import { EventType, RunEvent } from "../types/index.js";
+import { EventType, RunEvent } from "@bronson/types";
 
 /** Oldest events for a run are dropped once this count is exceeded (per-run cap). */
 const MAX_EVENTS_PER_RUN = 20_000;
