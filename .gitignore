@@ -1,6 +1,9 @@
 node_modules/
 dist/
 .env
+.env.local
 *.log
 .turbo
 .next
+.agents/
+.cursor

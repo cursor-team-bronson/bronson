@@ -10,6 +10,10 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function depsSatisfied(deps: string[], statusByStep: Record<string, StepStatus>) {
+  return deps.every((d) => statusByStep[d] === "ok");
+}
+
 function StatusLight({ status }: { status: StepStatus }) {
   const label =
     status === "idle"
@@ -41,7 +45,9 @@ export default function RunPage() {
   const [yamlText, setYamlText] = useState(starterYaml);
   const [statusByStep, setStatusByStep] = useState<Record<string, StepStatus>>({});
   const [isRunning, setIsRunning] = useState(false);
+  const [runningStepId, setRunningStepId] = useState<string | null>(null);
   const abortRef = useRef(false);
+  const singleStepBusyRef = useRef(false);
 
   const loadFromStorage = useCallback(() => {
     try {
@@ -79,8 +85,38 @@ export default function RunPage() {
     abortRef.current = true;
   }, []);
 
+  const runSingleStep = useCallback(
+    async (stepId: string) => {
+      if (isRunning || singleStepBusyRef.current) return;
+      const deps = graph.depsByNode.get(stepId) ?? [];
+      const st = statusByStep[stepId] ?? "idle";
+      if (!depsSatisfied(deps, statusByStep)) return;
+      const hasProgress = graph.nodes.some((id) => statusByStep[id] === "ok");
+      if (st === "error") {
+        /* retry */
+      } else if (st === "idle" && hasProgress) {
+        /* continue manually after partial run */
+      } else {
+        return;
+      }
+
+      singleStepBusyRef.current = true;
+      setRunningStepId(stepId);
+      setStatusByStep((prev) => ({ ...prev, [stepId]: "running" }));
+      try {
+        await sleep(550 + Math.floor(Math.random() * 450));
+        const failed = Math.random() < 0.1;
+        setStatusByStep((prev) => ({ ...prev, [stepId]: failed ? "error" : "ok" }));
+      } finally {
+        singleStepBusyRef.current = false;
+        setRunningStepId(null);
+      }
+    },
+    [graph.depsByNode, graph.nodes, isRunning, statusByStep],
+  );
+
   const run = useCallback(async () => {
-    if (!runnable || isRunning) return;
+    if (!runnable || isRunning || runningStepId) return;
     abortRef.current = false;
     setIsRunning(true);
     const idle: Record<string, StepStatus> = {};
@@ -114,7 +150,7 @@ export default function RunPage() {
 
     setIsRunning(false);
     abortRef.current = false;
-  }, [graph.nodes, isRunning, order, runnable]);
+  }, [graph.nodes, isRunning, order, runnable, runningStepId]);
 
   return (
     <main className="mx-auto flex min-h-0 w-full max-w-7xl flex-1 flex-col gap-8 px-5 py-8 sm:px-8 lg:py-12">
@@ -126,17 +162,18 @@ export default function RunPage() {
           <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground">
             Runs the workflow from the DAG editor in <strong className="font-medium text-foreground">topological order</strong>{" "}
             (simulated steps for now). Edit YAML on the DAG page, then use <strong className="font-medium text-foreground">Reload</strong>{" "}
-            or switch tabs to refresh. About 10% of steps randomly fail so you can see the error state.
+            or switch tabs to refresh. About 10% of steps randomly fail; use <strong className="font-medium text-foreground">Retry step</strong>{" "}
+            when a step errors (or <strong className="font-medium text-foreground">Run step</strong> to advance idle steps once upstream steps have completed).
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button type="button" variant="outline" size="sm" onClick={loadFromStorage} disabled={isRunning}>
+          <Button type="button" variant="outline" size="sm" onClick={loadFromStorage} disabled={isRunning || Boolean(runningStepId)}>
             Reload from editor
           </Button>
           <Button type="button" variant="destructive" size="sm" onClick={stop} disabled={!isRunning}>
             Stop
           </Button>
-          <Button type="button" onClick={run} disabled={!runnable || isRunning}>
+          <Button type="button" onClick={run} disabled={!runnable || isRunning || Boolean(runningStepId)}>
             Run
           </Button>
         </div>
@@ -160,6 +197,17 @@ export default function RunPage() {
             const deps = graph.depsByNode.get(stepId) ?? [];
             const type = graph.stepTypes.get(stepId);
             const status = statusByStep[stepId] ?? "idle";
+            const upstreamOk = depsSatisfied(deps, statusByStep);
+            const hasProgress = graph.nodes.some((id) => statusByStep[id] === "ok");
+            const canRunIndividually =
+              upstreamOk &&
+              !isRunning &&
+              !runningStepId &&
+              (status === "error" || (status === "idle" && hasProgress));
+            const stepBusy = runningStepId === stepId;
+            const showBlockedHint =
+              status === "error" && !upstreamOk && !isRunning && !runningStepId;
+
             return (
               <li
                 key={stepId}
@@ -174,12 +222,26 @@ export default function RunPage() {
                       </p>
                     ) : null}
                   </div>
-                  <StatusLight status={status} />
+                  <StatusLight status={stepBusy ? "running" : status} />
                 </div>
                 <p className="text-xs text-muted-foreground">
                   depends on:{" "}
                   <span className="font-mono text-foreground">{deps.length ? deps.join(", ") : "—"}</span>
                 </p>
+                {canRunIndividually ? (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    className="self-start"
+                    onClick={() => void runSingleStep(stepId)}
+                  >
+                    {status === "error" ? "Retry step" : "Run step"}
+                  </Button>
+                ) : null}
+                {showBlockedHint ? (
+                  <p className="text-xs text-muted-foreground">Retry unavailable until all dependency steps succeed.</p>
+                ) : null}
               </li>
             );
           })}
