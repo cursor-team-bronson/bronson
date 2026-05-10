@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "node:url";
 import { config as loadEnv } from "dotenv";
 
 /**
@@ -7,7 +8,8 @@ import { config as loadEnv } from "dotenv";
  * does not depend on `process.cwd()` or folder names like `orchestrator`.
  */
 function envPathCandidates(): string[] {
-  const orchestratorRoot = path.resolve(__dirname, "..");
+  const srcDir = path.dirname(fileURLToPath(import.meta.url));
+  const orchestratorRoot = path.resolve(srcDir, "..");
   const repoRoot = path.resolve(orchestratorRoot, "..", "..");
 
   return [path.join(repoRoot, ".env"), path.join(orchestratorRoot, ".env")];
