@@ -2,7 +2,10 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
+import { useRouter } from "next/navigation";
+import { Button } from "@/components/ui/button";
 import {
+  essayWorkflowYaml,
   parseDag,
   starterYaml,
   WORKFLOW_YAML_STORAGE_KEY,
@@ -18,6 +21,7 @@ type DagNode = {
 const DagPreview = dynamic<{ nodes: DagNode[] }>(() => import("@/app/dag-preview"), { ssr: false });
 
 export default function DagPage() {
+  const router = useRouter();
   const [yamlText, setYamlText] = useState(starterYaml);
   const [hydrated, setHydrated] = useState(false);
   const [yamlHelpOpen, setYamlHelpOpen] = useState(false);
@@ -106,12 +110,29 @@ export default function DagPage() {
             the model runner page.
           </p>
         </div>
-        <div
-          className={`inline-flex w-fit shrink-0 items-center rounded-full border px-3 py-1 text-xs font-medium ${workflowStatusTone}`}
-          role="status"
-          aria-live="polite"
-        >
-          {workflowStatusLabel}
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={() => {
+              setYamlText(essayWorkflowYaml);
+              try {
+                localStorage.setItem(WORKFLOW_YAML_STORAGE_KEY, essayWorkflowYaml);
+              } catch {
+                /* ignore */
+              }
+            }}
+          >
+            Load essay test (3 cycles)
+          </Button>
+          <div
+            className={`inline-flex w-fit shrink-0 items-center rounded-full border px-3 py-1 text-xs font-medium ${workflowStatusTone}`}
+            role="status"
+            aria-live="polite"
+          >
+            {workflowStatusLabel}
+          </div>
         </div>
       </header>
 
@@ -201,18 +222,26 @@ export default function DagPage() {
       <footer className="flex flex-col gap-3 border-t border-border pt-8 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-xs text-muted-foreground">
           {canSubmit
-            ? "Workflow is valid and acyclic."
+            ? "Submit saves this YAML and opens the Model runner (/run) to execute against the orchestrator."
             : graph.parseError
               ? "Fix YAML to enable submit."
               : hasCycle
                 ? "Resolve the cycle to enable submit."
                 : graph.nodes.length === 0
-                  ? "Define at least one step to submit."
+                  ? "Define steps or jobs to submit."
                   : "Finish defining a valid DAG to submit."}
         </p>
         <button
           type="button"
           disabled={!canSubmit}
+          onClick={() => {
+            try {
+              localStorage.setItem(WORKFLOW_YAML_STORAGE_KEY, yamlText);
+            } catch {
+              /* ignore */
+            }
+            router.push("/run");
+          }}
           className="inline-flex items-center justify-center rounded-xl bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground shadow-sm transition-opacity hover:opacity-95 disabled:pointer-events-none disabled:opacity-45"
         >
           Submit workflow

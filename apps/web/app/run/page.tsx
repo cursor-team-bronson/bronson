@@ -1,9 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { JobStatus, RunState } from "@bronson/types";
+import type { JobStatus, RunState, RunStatus } from "@bronson/types";
 import { Button } from "@/components/ui/button";
 import {
+  essayWorkflowYaml,
   parseDag,
   starterYaml,
   toOrchestratorWorkflowYaml,
@@ -56,11 +57,23 @@ function StatusLight({ status }: { status: StepStatus }) {
   );
 }
 
+function jobErrorsFromRun(run: RunState): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [id, j] of Object.entries(run.jobs)) {
+    if (j.error?.trim()) out[id] = j.error.trim();
+  }
+  return out;
+}
+
 export default function RunPage() {
   const [yamlText, setYamlText] = useState(starterYaml);
   const [statusByStep, setStatusByStep] = useState<Record<string, StepStatus>>({});
   const [isRunning, setIsRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
+  /** Last started run (for links + job errors from GET /api/runs/:id). */
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [activeRunStatus, setActiveRunStatus] = useState<RunStatus | null>(null);
+  const [jobErrors, setJobErrors] = useState<Record<string, string>>({});
   const abortRef = useRef(false);
   const eventSourceRef = useRef<EventSource | null>(null);
 
@@ -68,6 +81,16 @@ export default function RunPage() {
     try {
       const s = localStorage.getItem(WORKFLOW_YAML_STORAGE_KEY);
       if (s) setYamlText(s);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const loadEssayPreset = useCallback(() => {
+    setYamlText(essayWorkflowYaml);
+    setRunError(null);
+    try {
+      localStorage.setItem(WORKFLOW_YAML_STORAGE_KEY, essayWorkflowYaml);
     } catch {
       /* ignore */
     }
@@ -114,6 +137,8 @@ export default function RunPage() {
 
     abortRef.current = false;
     setRunError(null);
+    setJobErrors({});
+    setActiveRunStatus(null);
     setIsRunning(true);
 
     const idle: Record<string, StepStatus> = {};
@@ -133,8 +158,12 @@ export default function RunPage() {
       }
       const started = (await res.json()) as RunState;
       runId = started.runId;
+      setActiveRunId(runId);
+      setActiveRunStatus(started.status);
+      setJobErrors(jobErrorsFromRun(started));
     } catch (e) {
       setIsRunning(false);
+      setActiveRunId(null);
       setRunError(e instanceof Error ? e.message : String(e));
       return;
     }
@@ -145,6 +174,8 @@ export default function RunPage() {
         const res = await fetch(`/api/runs/${runId}`);
         if (!res.ok) return;
         const runState = (await res.json()) as RunState;
+        setActiveRunStatus(runState.status);
+        setJobErrors(jobErrorsFromRun(runState));
         setStatusByStep((prev) => {
           const next = { ...prev };
           for (const [jid, j] of Object.entries(runState.jobs)) {
@@ -175,7 +206,10 @@ export default function RunPage() {
     es.onmessage = (ev) => {
       if (abortRef.current) return;
       try {
-        const evt = JSON.parse(ev.data) as { type: string };
+        const evt = JSON.parse(ev.data) as {
+          type: string;
+          payload?: { reason?: string; error?: string };
+        };
         if (
           evt.type === "JOB_STARTED" ||
           evt.type === "JOB_COMPLETED" ||
@@ -216,12 +250,16 @@ export default function RunPage() {
           </h1>
           <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground">
             Posts this workflow to the Bronson orchestrator (<code className="rounded bg-muted px-1 py-0.5 text-xs">POST /api/runs</code>
-            ), which runs jobs through CLōD in DAG waves. Use YAML with <strong className="font-medium text-foreground">jobs:</strong>{" "}
-            (see <code className="text-xs">examples/hello-world-ticker.yaml</code>) or <strong className="font-medium text-foreground">steps:</strong> from the DAG
-            editor (converted automatically). Keep the orchestrator on port 3001 or set <code className="text-xs">ORCHESTRATOR_URL</code>.
+            ), which runs jobs through CLōD in DAG waves. Use <strong className="font-medium text-foreground">Load essay test</strong> for the 3-cycle writer/reviewer
+            flow (requires <code className="text-xs">ALLOW_SHELL_TOOL=true</code> and <code className="text-xs">TOOL_SHELL_CWD</code> in the orchestrator — see example
+            header in <code className="text-xs">examples/essay-write-review-3cycles.yaml</code>). Or use <strong className="font-medium text-foreground">jobs:</strong> /{" "}
+            <strong className="font-medium text-foreground">steps:</strong> from the DAG editor. Orchestrator on port 3001; set <code className="text-xs">ORCHESTRATOR_URL</code> for the web app if needed.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <Button type="button" variant="secondary" size="sm" onClick={loadEssayPreset} disabled={isRunning}>
+            Load essay test (3 cycles)
+          </Button>
           <Button type="button" variant="outline" size="sm" onClick={loadFromStorage} disabled={isRunning}>
             Reload from editor
           </Button>
@@ -240,6 +278,66 @@ export default function RunPage() {
           <p className="mt-2 font-mono text-xs">{runError}</p>
         </div>
       ) : null}
+
+      {activeRunId ? (
+        <div className="rounded-xl border border-border bg-muted/30 p-4 text-sm">
+          <p className="font-medium text-foreground">Last run</p>
+          <p className="mt-1 break-all font-mono text-xs text-muted-foreground">{activeRunId}</p>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Orchestrator status:{" "}
+            <span className="font-medium text-foreground">{activeRunStatus ?? "—"}</span>
+          </p>
+          <a
+            className="mt-3 inline-flex text-xs font-medium text-primary underline underline-offset-2"
+            href={`/api/runs/${activeRunId}/events/history`}
+            target="_blank"
+            rel="noreferrer"
+          >
+            Open full event log (JSON)
+          </a>
+        </div>
+      ) : null}
+
+      {(Object.keys(jobErrors).length > 0 || activeRunStatus === "failed") && (
+        <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-sm">
+          <p className="font-medium text-destructive">
+            {Object.keys(jobErrors).length > 0 ? "Job error details" : "Run ended as failed"}
+          </p>
+          {Object.keys(jobErrors).length === 0 && activeRunStatus === "failed" ? (
+            <p className="mt-2 text-xs text-muted-foreground">
+              No per-job message returned — use the event log link above or check the orchestrator terminal.
+            </p>
+          ) : (
+            <ul className="mt-3 space-y-3">
+              {Object.entries(jobErrors).map(([jid, msg]) => (
+                <li key={jid}>
+                  <span className="font-mono text-xs font-semibold text-foreground">{jid}</span>
+                  <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-background/80 p-3 font-mono text-[11px] text-destructive ring-1 ring-destructive/20">
+                    {msg}
+                  </pre>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="mt-4 border-t border-destructive/20 pt-4 text-xs text-muted-foreground">
+            <p className="font-medium text-foreground">Typical fixes</p>
+            <ul className="mt-2 list-disc space-y-1 pl-4">
+              <li>
+                CLōD HTTP 403/401: check <code className="rounded bg-muted px-1">CLOD_API_KEY</code>,{" "}
+                <code className="rounded bg-muted px-1">CLOD_BASE_URL</code>, and{" "}
+                <code className="rounded bg-muted px-1">DEFAULT_AGENT_MODEL</code> in{" "}
+                <code className="rounded bg-muted px-1">apps/orchestrator/.env</code>.
+              </li>
+              <li>
+                Essay / shell: set <code className="rounded bg-muted px-1">ALLOW_SHELL_TOOL=true</code>,{" "}
+                <code className="rounded bg-muted px-1">TOOL_SHELL_CWD</code> to your essay folder (must match paths in the YAML / essay preset), and relax{" "}
+                <code className="rounded bg-muted px-1">TOOL_SHELL_ALLOWLIST_REGEX</code> if commands are blocked.
+              </li>
+              <li>Orchestrator must be running on port 3001 (or set web <code className="rounded bg-muted px-1">ORCHESTRATOR_URL</code>).</li>
+            </ul>
+          </div>
+        </div>
+      )}
 
       {graph.parseError ? (
         <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
@@ -279,6 +377,14 @@ export default function RunPage() {
                   depends on:{" "}
                   <span className="font-mono text-foreground">{deps.length ? deps.join(", ") : "—"}</span>
                 </p>
+                {jobErrors[stepId] ? (
+                  <div className="rounded-lg border border-destructive/35 bg-destructive/5 p-3">
+                    <p className="text-xs font-medium text-destructive">Error</p>
+                    <pre className="mt-1 max-h-36 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-destructive">
+                      {jobErrors[stepId]}
+                    </pre>
+                  </div>
+                ) : null}
               </li>
             );
           })}
