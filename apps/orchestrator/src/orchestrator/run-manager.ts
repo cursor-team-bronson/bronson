@@ -82,7 +82,10 @@ export function topUpJobBudget(runId: string, jobId: string, amountUsd: number, 
   if (jobState.status !== "awaiting_funding")
     throw new Error(`Job ${jobId} is not awaiting funding (status: ${jobState.status})`);
 
-  budgetTracker.topUp(runId, jobId, amountUsd, intentId);
+  const applied = budgetTracker.topUp(runId, jobId, amountUsd, intentId);
+  if (!applied) {
+    throw new Error(`Duplicate funding attempt for job ${jobId} (intentId: ${intentId ?? "none"})`);
+  }
   jobState.checkoutUrl = undefined;
   appendVersioned(runId, "BUDGET_FUNDED", jobId, { amountUsd, intentId });
 }
