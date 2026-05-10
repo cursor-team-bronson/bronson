@@ -62,8 +62,15 @@ function resolveFinalAssistantOutput(
   }
   const last = lastAssistantContent ?? "";
   if (!trivialTerminator(last)) return last;
+  /** Essay pattern: penultimate turn holds draft; last turn is "done". */
   if (chunks.length >= 2) return chunks[chunks.length - 2]!;
-  return chunks[chunks.length - 1] ?? last;
+  if (chunks.length === 1) return chunks[0]!;
+  if (chunks.length > 0) return chunks.join("\n\n");
+  if (last.trim().length > 0) return last;
+  return (
+    "[No assistant text was captured (tool-only turns). Add a final instruction in YAML for the model " +
+    "to emit required markers or summary prose, or raise tool_rounds_max / context_budget.]"
+  );
 }
 
 export async function runAgent(

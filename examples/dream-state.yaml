@@ -14,8 +14,12 @@
 #   ALLOW_SHELL_TOOL=true
 #   TOOL_SHELL_CWD=<absolute path to your project root>
 #   TOOL_SHELL_ALLOWLIST_REGEX=.*
+#   emit_artifacts uses shell + Node stdin only (no workspace_write). If you set
+#   ALLOW_WORKSPACE_WRITE=false globally, dream-state still runs.
 #
-# Shell scan jobs use Unix-style commands; on Windows prefer Git Bash/WSL or edit prompts to PowerShell.
+# Shell runs with the host default shell (often cmd.exe on Windows). If Unix utilities fail, use
+# PowerShell one-liners (see scan prompts). Reload the web “dream-state” preset after edits; stale YAML
+# in browser storage can still define human_review — this file does not.
 # Models must match your CLōD catalog ids exactly. Scan/emit jobs use DeepSeek V3.2 (same tier as analyze);
 # if that alias is unavailable, change each model: field or set DEFAULT_AGENT_MODEL and omit model per job.
 #
@@ -28,23 +32,25 @@ jobs:
 
   scan_memory:
     prompt: |
-      You are reading the existing project memory store.
+      You are reading the existing project memory store for this software repository (e.g. Bronson).
 
-      Use the shell tool to read the project's memory files. Try each command
-      in order and stop once you get meaningful content:
+      Use the shell tool. Try POSIX-style reads first; if the host is Windows and commands fail,
+      use PowerShell equivalents:
 
-        cat CLAUDE.md
-        cat .cursor/memory.md
-        cat .ai/memory.md
+        cat CLAUDE.md  OR  powershell -NoProfile -Command "Get-Content CLAUDE.md -Raw -ErrorAction SilentlyContinue"
+        cat .cursor/memory.md  OR  powershell -NoProfile -Command "Get-Content .cursor/memory.md -Raw -ErrorAction SilentlyContinue"
+        cat .ai/memory.md  OR  powershell -NoProfile -Command "Get-Content .ai/memory.md -Raw -ErrorAction SilentlyContinue"
 
-      If none exist, run:
-        find . -maxdepth 3 -name "*.md" -not -path "*/node_modules/*" \
-               -not -path "*/.git/*" | head -20
+      If none exist, list markdown under the repo (POSIX or PowerShell):
+
+        find . -maxdepth 3 -name "*.md" ... | head -20
+        OR
+        powershell -NoProfile -Command "Get-ChildItem -Recurse -Filter *.md -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch 'node_modules|\\.git' } | Select-Object -First 25 -ExpandProperty FullName"
 
       Collect everything you find and output it verbatim, labeled by filename.
       If absolutely nothing exists, output exactly: NO_MEMORY_FOUND
     tools: [shell]
-    tool_rounds_max: 8
+    tool_rounds_max: 24
     gate: auto
     on_failure: retry
     context_budget: 6000
@@ -65,7 +71,7 @@ jobs:
       output whatever is returned and note the limitation.
       If git is entirely absent, output: NO_GIT_HISTORY
     tools: [shell]
-    tool_rounds_max: 8
+    tool_rounds_max: 16
     gate: auto
     on_failure: retry
     context_budget: 6000
@@ -73,20 +79,19 @@ jobs:
 
   scan_project_docs:
     prompt: |
-      You are collecting project documentation and directory context.
+      You are collecting project documentation and directory context for this repo.
 
-      Use the shell tool to gather structural context in order:
+      Use the shell tool. Prefer POSIX; on Windows if ls/find/cat fail, use PowerShell:
 
-        ls -la
-        find . -maxdepth 3 -name "*.md" -not -path "*/node_modules/*" \
-               -not -path "*/.git/*"
-        cat README.md
-        find docs -maxdepth 2 -name "*.md" 2>/dev/null | xargs cat 2>/dev/null || true
+        ls -la   OR   powershell -NoProfile -Command "Get-ChildItem -Force"
+        find . -maxdepth 3 -name "*.md" ...   OR   powershell -NoProfile -Command "Get-ChildItem -Recurse -Depth 3 -Filter *.md | Where-Object { $_.FullName -notmatch 'node_modules|\\.git' } | Select-Object -ExpandProperty FullName"
+        cat README.md   OR   powershell -NoProfile -Command "Get-Content README.md -Raw -ErrorAction SilentlyContinue"
+        If docs/ exists, read *.md there similarly.
 
       Output all results verbatim, labeled by command.
       Skip any file that does not exist without erroring.
     tools: [shell]
-    tool_rounds_max: 8
+    tool_rounds_max: 24
     gate: auto
     on_failure: retry
     context_budget: 6000
@@ -96,7 +101,9 @@ jobs:
 
   analyze_code_structure:
     prompt: |
-      You are analyzing the CODE STRUCTURE knowledge plane for Dream consolidation.
+      You are analyzing the CODE STRUCTURE knowledge plane for Bronson memory consolidation.
+
+      The workflow filename "dream-state" is an internal codename — describe THIS repository only.
 
       Using the git history and project docs injected as context, extract:
         1. Active modules, packages, and their responsibilities
@@ -105,7 +112,8 @@ jobs:
         4. Patterns or architectural conventions visible from the git log
 
       Format your output as a concise structured list of facts.
-      Tag each fact [HIGH] or [LOW]. Omit speculation. Target ≤ 400 words.
+      Tag each fact [HIGH] or [LOW]. Omit speculation. If context is missing or only shell errors, say so [LOW] — do not invent modules.
+      Target ≤ 400 words.
     depends_on: [scan_git_history, scan_project_docs]
     gate: auto
     on_failure: retry
@@ -114,7 +122,14 @@ jobs:
 
   analyze_product_intent:
     prompt: |
-      You are analyzing the PRODUCT INTENT knowledge plane.
+      You are analyzing the PRODUCT INTENT knowledge plane for this software repository.
+
+      CRITICAL: Ignore the workflow codename "dream-state". Do NOT describe sleep apps, dream journals,
+      therapy, or human dream recall unless README/memory files explicitly say that. Bronson is an
+      agent/workflow orchestrator unless sources say otherwise.
+
+      If scan_memory or docs failed (JOB FAILED, HTTP errors, empty context, only shell errors), respond
+      with a short "Insufficient evidence" section listing unknowns [LOW] — do NOT fabricate product scope.
 
       Using the existing memory store and project docs injected as context, extract:
         1. What the project is (one sentence)
@@ -135,6 +150,9 @@ jobs:
     prompt: |
       You are analyzing the OPERATIONAL CONVENTIONS knowledge plane.
 
+      Only cite conventions evidenced in context (memory, git, or scans). If scan_memory failed, rely on
+      git and prior completed outputs only; label gaps [LOW].
+
       Using the existing memory and git history injected as context, extract:
         1. Coding conventions and style rules
         2. Test patterns and coverage expectations
@@ -153,8 +171,11 @@ jobs:
 
   consolidate:
     prompt: |
-      You are the Dream consolidation engine. Synthesize the three knowledge-plane
-      analyses from context into ONE canonical Markdown memory document.
+      You are the memory consolidation engine for the Bronson repository. Synthesize the three
+      knowledge-plane analyses from context into ONE canonical Markdown memory document.
+
+      The workflow name "dream-state" is NOT product scope — do not describe dream-tracking apps,
+      journaling products, or therapy tools unless sources explicitly state them.
 
       Rules — apply in order:
         DEDUPLICATE  Same fact in multiple planes → keep once in the best section.
@@ -223,9 +244,16 @@ jobs:
         <<<END_YAML_CAPABILITY>>>
 
       Before each block, 3–5 bullet rationale. Each YAML: snake_case job ids, gate: auto only,
-      no human gates, non-destructive. Prefer workspace_write. Models must be valid CLōD ids.
+      no human gates, non-destructive. Prefer shell or workspace_write per job. Models must be valid CLōD ids.
 
       No markdown fences around YAML — raw YAML only inside the markers.
+
+      Your final assistant message MUST contain the <<<YAML_*>>> marker blocks as visible text (not tool-only).
+      If upstream draft context is empty, still emit minimal placeholder YAML inside each marker explaining why.
+
+      For capability_build, include YAML comments showing how automation could POST this workflow to the
+      orchestrator (POST /api/runs with JSON body containing the workflow YAML) and mention the web UI
+      UI schedule preference key bronson.workflowSchedule.v1 for runners that POST on a cadence.
     depends_on: [consolidate]
     gate: auto
     on_failure: retry
@@ -236,35 +264,42 @@ jobs:
 
   emit_artifacts:
     prompt: |
+      You only have the shell tool (no workspace_write). Write UTF-8 files under TOOL_SHELL_CWD using Node.js.
+      Pass large bodies via the shell tool stdin field — never inline megabytes in the command string.
+
+      Writer pattern (repeat per file, change OUT path and stdin body):
+
+        command:
+          node -e "const fs=require('fs');const p=require('path');const out='REL_PATH';fs.mkdirSync(p.dirname(out),{recursive:true});let b='';process.stdin.on('data',d=>b+=d);process.stdin.on('end',()=>fs.writeFileSync(out,b));"
+        stdin: <exact bytes for that file>
+
+      Use forward slashes in REL_PATH (e.g. .dream/memory-output.md, .dream/proposed/memory-hygiene.yaml).
+
       Context contains:
         - consolidate → canonical Markdown memory (full body)
-        - draft_agent_workflows → text with <<<YAML_MEMORY_HYGIENE>>> ... <<<END_YAML_MEMORY_HYGIENE>>>
-          and <<<YAML_CAPABILITY>>> ... <<<END_YAML_CAPABILITY>>>
+        - draft_agent_workflows → text that may include <<<YAML_MEMORY_HYGIENE>>> … <<<END_YAML_MEMORY_HYGIENE>>>
+          and <<<YAML_CAPABILITY>>> … <<<END_YAML_CAPABILITY>>>
 
       Never modify CLAUDE.md, .cursor/memory.md, or existing memory sources.
 
       Steps:
-        1) workspace_write path .dream/memory-output.md — exact consolidate Markdown only.
+        1) Write .dream/memory-output.md — stdin = consolidate Markdown only.
 
-        2) From draft_agent_workflows text, extract raw YAML between the MEMORY_HYGIENE markers only.
-           workspace_write path .dream/proposed/memory-hygiene.yaml with that YAML.
+        2) Parse draft_agent_workflows; extract raw YAML between MEMORY_HYGIENE markers (if present).
+           Write .dream/proposed/memory-hygiene.yaml via stdin.
 
-        3) Extract raw YAML between the CAPABILITY markers only.
-           workspace_write path .dream/proposed/capability-build.yaml with that YAML.
+        3) Extract YAML between CAPABILITY markers; write .dream/proposed/capability-build.yaml.
 
-        4) workspace_write path .dream/proposed/README.md — 8–12 lines: what each file is for,
-           and "Run via POST /api/runs or copy into examples/ and Load dream-state–style presets."
+        4) Write .dream/proposed/README.md (8–12 lines): what each artifact is, how to POST /api/runs,
+           optional scheduling via bronson.workflowSchedule.v1 in the web UI, promote from examples/.
 
-      Shell once only if mkdir needed: mkdir -p .dream/proposed
+      If markers are missing, write .dream/proposed/draft-raw.txt with the full draft_agent_workflows text.
 
-      If markers are missing, workspace_write .dream/proposed/draft-raw.txt with the full
-      draft_agent_workflows output for manual recovery.
-
-      End with:
+      End your final assistant message with exactly:
         DREAM COMPLETE — artifacts under .dream/
     depends_on: [consolidate, draft_agent_workflows]
-    tools: [workspace_write, shell]
-    tool_rounds_max: 20
+    tools: [shell]
+    tool_rounds_max: 28
     gate: auto
     on_failure: retry
     context_budget: 16000

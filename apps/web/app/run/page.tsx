@@ -4,6 +4,23 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { JobStatus, RunState, RunStatus } from "@bronson/types";
 import { Button } from "@/components/ui/button";
 import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  BRONSON_WORKFLOW_SCHEDULE_KEY,
   dreamStateWorkflowYaml,
   essayWorkflowYaml,
   parseDag,
@@ -11,8 +28,37 @@ import {
   toOrchestratorWorkflowYaml,
   WORKFLOW_YAML_STORAGE_KEY,
 } from "@/lib/workflow-yaml";
+import { Input } from "@/components/ui/input";
+import { CalendarClock } from "lucide-react";
 
 type StepStatus = "idle" | "running" | "ok" | "error";
+
+/** Matches cron-style runners; manual = interactive Run only. */
+type ScheduleCadence = "manual" | "hourly" | "daily" | "weekly";
+
+function parseLocalTime(t: string): { hour: number; minute: number } {
+  const [h, m] = t.split(":").map(x => Number.parseInt(x, 10));
+  const hour = Number.isFinite(h) ? Math.min(23, Math.max(0, h)) : 9;
+  const minute = Number.isFinite(m) ? Math.min(59, Math.max(0, m)) : 0;
+  return { hour, minute };
+}
+
+/** Cron expression for external runners (local wall-clock). Weekly = Sunday. */
+function cronExpressionForSchedule(cadence: ScheduleCadence, timeLocal: string): string {
+  const { hour, minute } = parseLocalTime(timeLocal);
+  switch (cadence) {
+    case "manual":
+      return "—";
+    case "hourly":
+      return `${minute} * * * *`;
+    case "daily":
+      return `${minute} ${hour} * * *`;
+    case "weekly":
+      return `${minute} ${hour} * * 0`;
+    default:
+      return "—";
+  }
+}
 
 function mapJobStatus(s: JobStatus): StepStatus {
   switch (s) {
@@ -81,6 +127,27 @@ export default function RunPage() {
   /** Fallback while SSE can drop (proxy timeouts); cleared when run reaches a terminal state or Stop. */
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  /** Preferred cadence for external schedulers; persisted under BRONSON_WORKFLOW_SCHEDULE_KEY. */
+  const [scheduleCadence, setScheduleCadence] = useState<ScheduleCadence>("manual");
+  /** Local time (HH:MM) for daily/weekly; hourly uses the minute field only. */
+  const [scheduleTime, setScheduleTime] = useState("09:00");
+  const [scheduleSavedAt, setScheduleSavedAt] = useState<string | null>(null);
+
+  const scheduleHint = useMemo(() => {
+    switch (scheduleCadence) {
+      case "manual":
+        return null;
+      case "hourly":
+        return "At :MM every hour (minute from the clock below).";
+      case "daily":
+        return "Every day at this local time.";
+      case "weekly":
+        return "Every Sunday at this local time.";
+      default:
+        return null;
+    }
+  }, [scheduleCadence]);
+
   const clearPoll = useCallback(() => {
     if (pollRef.current) {
       clearInterval(pollRef.current);
@@ -122,6 +189,42 @@ export default function RunPage() {
   useEffect(() => {
     loadFromStorage();
   }, [loadFromStorage]);
+
+  useEffect(() => {
+    try {
+      let raw = localStorage.getItem(BRONSON_WORKFLOW_SCHEDULE_KEY);
+      if (!raw) raw = localStorage.getItem("bronson.scheduleDemo.v1");
+      if (!raw) return;
+      const o = JSON.parse(raw) as { cadence?: string; savedAt?: string; timeLocal?: string };
+      const c = o.cadence;
+      if (c === "hourly" || c === "daily" || c === "weekly") setScheduleCadence(c);
+      else if (c === "off" || c === "manual") setScheduleCadence("manual");
+      if (typeof o.savedAt === "string") setScheduleSavedAt(o.savedAt);
+      if (typeof o.timeLocal === "string" && /^\d{1,2}:\d{2}$/.test(o.timeLocal)) setScheduleTime(o.timeLocal);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const persistSchedule = useCallback(() => {
+    try {
+      if (scheduleCadence === "manual") {
+        localStorage.removeItem(BRONSON_WORKFLOW_SCHEDULE_KEY);
+        setScheduleSavedAt(null);
+        return;
+      }
+      const payload = {
+        cadence: scheduleCadence,
+        timeLocal: scheduleTime,
+        savedAt: new Date().toISOString(),
+        preview: yamlText.slice(0, 200),
+      };
+      localStorage.setItem(BRONSON_WORKFLOW_SCHEDULE_KEY, JSON.stringify(payload));
+      setScheduleSavedAt(payload.savedAt);
+    } catch {
+      /* ignore */
+    }
+  }, [scheduleCadence, scheduleTime, yamlText]);
 
   useEffect(() => {
     const onVis = () => {
@@ -302,6 +405,94 @@ export default function RunPage() {
             Run
           </Button>
         </div>
+        <Card size="sm" className="w-full max-w-sm border-border bg-muted/15 shadow-sm">
+          <CardHeader className="gap-1 pb-2">
+            <CardTitle className="flex items-center gap-2 text-sm font-semibold">
+              <CalendarClock className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+              Schedule
+            </CardTitle>
+            <CardDescription className="text-[11px] leading-snug">
+              Stored locally as <code className="rounded bg-muted px-1 font-mono">{BRONSON_WORKFLOW_SCHEDULE_KEY}</code>. Point cron / CI at{" "}
+              <code className="rounded bg-muted px-1 text-[11px]">POST /api/runs</code>.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3 pt-0">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="workflow-schedule" className="text-xs">
+                  Cadence
+                </Label>
+                <Select
+                  value={scheduleCadence}
+                  onValueChange={v => setScheduleCadence(v as ScheduleCadence)}
+                  disabled={isRunning}
+                >
+                  <SelectTrigger id="workflow-schedule" size="sm" className="w-full">
+                    <SelectValue placeholder="Cadence" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="manual">Manual</SelectItem>
+                    <SelectItem value="hourly">Hourly</SelectItem>
+                    <SelectItem value="daily">Daily</SelectItem>
+                    <SelectItem value="weekly">Weekly (Sun)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="workflow-schedule-time" className="text-xs">
+                  Time
+                </Label>
+                <Input
+                  id="workflow-schedule-time"
+                  type="time"
+                  value={scheduleTime}
+                  onChange={e => setScheduleTime(e.target.value)}
+                  disabled={isRunning || scheduleCadence === "manual"}
+                  className="h-8 text-xs"
+                />
+              </div>
+            </div>
+            {scheduleCadence !== "manual" && scheduleHint ? (
+              <p className="text-[11px] text-muted-foreground">{scheduleHint}</p>
+            ) : null}
+            {scheduleCadence !== "manual" ? (
+              <p className="font-mono text-[11px] text-muted-foreground">
+                cron <span className="text-foreground">{cronExpressionForSchedule(scheduleCadence, scheduleTime)}</span>
+              </p>
+            ) : null}
+          </CardContent>
+          <CardFooter className="flex flex-wrap items-center gap-2 border-t border-border/60 pt-3">
+            <Button type="button" size="sm" onClick={persistSchedule} disabled={isRunning}>
+              Save schedule
+            </Button>
+            {scheduleCadence !== "manual" ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setScheduleCadence("manual");
+                  setScheduleTime("09:00");
+                  try {
+                    localStorage.removeItem(BRONSON_WORKFLOW_SCHEDULE_KEY);
+                    setScheduleSavedAt(null);
+                  } catch {
+                    /* ignore */
+                  }
+                }}
+                disabled={isRunning}
+              >
+                Clear
+              </Button>
+            ) : null}
+            {scheduleCadence !== "manual" && scheduleSavedAt ? (
+              <p className="w-full text-[11px] text-muted-foreground">
+                <span className="font-mono font-medium text-foreground">{scheduleCadence}</span> ·{" "}
+                <span className="font-mono">{scheduleTime}</span> · saved <span className="font-mono">{scheduleSavedAt}</span>
+              </p>
+            ) : null}
+          </CardFooter>
+        </Card>
       </header>
 
       {runError ? (
@@ -371,6 +562,13 @@ export default function RunPage() {
               <li>
                 Live UI updates use SSE plus a 4s poll until the run finishes — refresh if something looks stuck with long shell/tool loops (
                 <code className="rounded bg-muted px-1">tool_rounds_max</code>).
+              </li>
+              <li>
+                Dream-state: scans may need higher <code className="rounded bg-muted px-1">tool_rounds_max</code> on Windows;{" "}
+                <code className="rounded bg-muted px-1">emit_artifacts</code> uses shell + Node stdin only (no{" "}
+                <code className="rounded bg-muted px-1">workspace_write</code>). If{" "}
+                <code className="rounded bg-muted px-1">ALLOW_WORKSPACE_WRITE=false</code>, other presets may still need{" "}
+                <code className="rounded bg-muted px-1">true</code>.
               </li>
             </ul>
           </div>
