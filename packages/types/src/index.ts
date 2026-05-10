@@ -9,6 +9,8 @@ export const JobConfigSchema = z.object({
   tools: z.array(z.string()).optional().default([]),
   on_failure: z.enum(["halt", "retry"]).default("halt"),
   max_retries: z.number().int().min(0).max(5).default(0),
+  /** Max USD spend allowed for this job. Halts and creates an AllScale checkout when exceeded. */
+  budget_usd: z.number().positive().optional(),
 });
 
 export const WorkflowConfigSchema = z.object({
@@ -21,7 +23,7 @@ export type WorkflowConfig = z.infer<typeof WorkflowConfigSchema>;
 
 export type JobStatus =
   | "pending" | "running" | "gate_pending"
-  | "gate_approved" | "completed" | "failed" | "skipped";
+  | "gate_approved" | "awaiting_funding" | "completed" | "failed" | "skipped";
 
 export type RunStatus = "running" | "gate_pending" | "completed" | "failed";
 
@@ -30,6 +32,8 @@ export interface JobState {
   startedAt?: string; completedAt?: string;
   output?: string; tokensUsed?: number; costUsd?: number;
   retryCount: number; error?: string;
+  /** AllScale checkout URL set when job is awaiting_funding */
+  checkoutUrl?: string;
 }
 
 export interface RunState {
@@ -41,6 +45,7 @@ export interface RunState {
 export type EventType =
   | "RUN_STARTED" | "JOB_STARTED" | "JOB_COMPLETED" | "JOB_FAILED"
   | "GATE_PENDING" | "GATE_APPROVED" | "GATE_REJECTED"
+  | "BUDGET_EXCEEDED" | "BUDGET_FUNDED" | "JOB_RESUMED"
   | "RUN_COMPLETED" | "RUN_FAILED";
 
 export interface RunEvent {
@@ -62,4 +67,13 @@ export interface AgentRunOptions {
 }
 export interface AgentRunResult {
   output: string; tokensUsed: number; costUsd: number;
+}
+
+export interface BudgetExceededInfo {
+  runId: string;
+  jobId: string;
+  spentUsd: number;
+  limitUsd: number;
+  checkoutUrl: string;
+  intentId: string;
 }

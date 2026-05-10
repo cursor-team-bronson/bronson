@@ -1,11 +1,15 @@
 import { Router, Request, Response } from "express";
 import { parseWorkflowString } from "../parser/yaml-parser.js";
-import { startRun, getRun, listRuns } from "../orchestrator/run-manager.js";
+import { startRun, getRun, listRuns, topUpJobBudget } from "../orchestrator/run-manager.js";
 import { gateManager } from "../gates/gate-manager.js";
 import { eventLog } from "../event-log/event-log.js";
 import { streamRunEvents } from "./sse.js";
+import { budgetTracker } from "../orchestrator/budget-tracker.js";
+import { generateWorkflow } from "../meta-agent/yaml-generator.js";
 
 export const router = Router();
+
+// ─── Runs ─────────────────────────────────────────────────────────────────────
 
 router.post("/runs", async (req: Request, res: Response) => {
   try {
@@ -23,6 +27,13 @@ router.get("/runs/:runId", (req, res) => {
   res.json(run);
 });
 
+router.get("/runs/:runId/dag", (req, res) => {
+  const run = getRun(req.params.runId) as any;
+  if (!run) { res.status(404).json({ error: "Run not found" }); return; }
+  if (!run.dag) { res.status(404).json({ error: "DAG not found for this run" }); return; }
+  res.json(run.dag);
+});
+
 router.get("/runs/:runId/events", (req, res) => {
   const run = getRun(req.params.runId);
   if (!run) { res.status(404).json({ error: "Run not found" }); return; }
@@ -35,14 +46,69 @@ router.get("/runs/:runId/events/history", (req, res) => {
   res.json(eventLog.getEventsForRun(req.params.runId));
 });
 
-router.get("/runs/:runId/gates", (req, res) => res.json(gateManager.listPending(req.params.runId)));
+// ─── Gates ────────────────────────────────────────────────────────────────────
+
+router.get("/runs/:runId/gates", (req, res) =>
+  res.json(gateManager.listPending(req.params.runId)),
+);
 
 router.post("/runs/:runId/gates/:jobId/approve", (req, res) => {
-  try { gateManager.approve(req.params.runId, req.params.jobId, (req.body as any).editedOutput); res.json({ ok: true }); }
-  catch (err) { res.status(404).json({ error: String(err) }); }
+  try {
+    gateManager.approve(req.params.runId, req.params.jobId, (req.body as any).editedOutput);
+    res.json({ ok: true });
+  } catch (err) { res.status(404).json({ error: String(err) }); }
 });
 
 router.post("/runs/:runId/gates/:jobId/reject", (req, res) => {
-  try { gateManager.reject(req.params.runId, req.params.jobId, (req.body as any).reason); res.json({ ok: true }); }
-  catch (err) { res.status(404).json({ error: String(err) }); }
+  try {
+    gateManager.reject(req.params.runId, req.params.jobId, (req.body as any).reason);
+    res.json({ ok: true });
+  } catch (err) { res.status(404).json({ error: String(err) }); }
+});
+
+// ─── Budget / AllScale ────────────────────────────────────────────────────────
+
+/** List jobs currently awaiting funding for a run. */
+router.get("/runs/:runId/budget/awaiting", (req, res) =>
+  res.json(budgetTracker.listAwaiting(req.params.runId)),
+);
+
+/**
+ * Called by the AllScale webhook handler in the Next.js app once payment is confirmed.
+ * Resumes the halted job.
+ */
+router.post("/runs/:runId/jobs/:jobId/fund", (req, res) => {
+  try {
+    const { amountUsd } = req.body as { amountUsd?: number };
+    if (typeof amountUsd !== "number" || amountUsd <= 0) {
+      res.status(400).json({ error: "amountUsd (positive number) required" });
+      return;
+    }
+    topUpJobBudget(req.params.runId, req.params.jobId, amountUsd);
+    res.json({ ok: true });
+  } catch (err) { res.status(400).json({ error: String(err) }); }
+});
+
+// ─── Meta-agent: YAML generation ─────────────────────────────────────────────
+
+/**
+ * POST /api/generate-workflow
+ * Body: { description: string }
+ * Returns: { yaml: string, validated: boolean, validationError?: string }
+ *
+ * The meta-agent reads SKILLS.md and uses CLōD to produce a valid workflow YAML
+ * from a plain-English description of the desired task.
+ */
+router.post("/generate-workflow", async (req: Request, res: Response) => {
+  try {
+    const { description } = req.body as { description?: string };
+    if (!description?.trim()) {
+      res.status(400).json({ error: "description field required" });
+      return;
+    }
+    const result = await generateWorkflow(description.trim());
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
 });
