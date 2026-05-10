@@ -177,11 +177,14 @@ steps:
   - id: agent-a
     depends_on: orchestrate
     ai_gate_after: orchestrate
+    budget_usd: 0.10
   - id: agent-b
     depends_on: orchestrate
     ai_gate_after: orchestrate
+    budget_usd: 0.10
   - id: join
-    depends_on: [agent-a, agent-b]`;
+    depends_on: [agent-a, agent-b]
+    gate: human`;
 
 export type Step = {
   id: string;
@@ -197,6 +200,7 @@ export type Step = {
   human_gate_after?: string[] | string;
   ai_gate_after?: string[] | string;
   gate?: string;
+  budget_usd?: number;
 };
 
 export type GraphResult = {
@@ -428,6 +432,7 @@ export function toOrchestratorWorkflowYaml(text: string): OrchestratorYamlResult
       if (typeof step.model === "string" && step.model.trim()) job.model = step.model.trim();
       if (Array.isArray(step.tools) && step.tools.length) job.tools = step.tools;
       if (typeof step.tool_rounds_max === "number") job.tool_rounds_max = step.tool_rounds_max;
+      if (typeof step.budget_usd === "number" && step.budget_usd > 0) job.budget_usd = step.budget_usd;
 
       jobs[step.id] = job;
     }

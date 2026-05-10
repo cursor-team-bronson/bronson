@@ -84,6 +84,7 @@ export default function RunPage() {
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [activeRunStatus, setActiveRunStatus] = useState<RunStatus | null>(null);
   const [jobErrors, setJobErrors] = useState<Record<string, string>>({});
+  const [jobDetails, setJobDetails] = useState<Record<string, { costUsd?: number; tokensUsed?: number; budgetUsd?: number; status: string }>>({});
   const [budgetAlert, setBudgetAlert] = useState<BudgetAlert | null>(null);
   const abortRef = useRef(false);
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -187,6 +188,13 @@ export default function RunPage() {
         const runState = (await res.json()) as RunState;
         setActiveRunStatus(runState.status);
         setJobErrors(jobErrorsFromRun(runState));
+        setJobDetails(() => {
+          const next: Record<string, { costUsd?: number; tokensUsed?: number; budgetUsd?: number; status: string }> = {};
+          for (const [jid, j] of Object.entries(runState.jobs)) {
+            next[jid] = { costUsd: j.costUsd, tokensUsed: j.tokensUsed, status: j.status };
+          }
+          return next;
+        });
         setStatusByStep((prev) => {
           const next = { ...prev };
           for (const [jid, j] of Object.entries(runState.jobs)) {
@@ -397,20 +405,47 @@ export default function RunPage() {
 
       {activeRunId ? (
         <div className="rounded-xl border border-border bg-muted/30 p-4 text-sm">
-          <p className="font-medium text-foreground">Last run</p>
-          <p className="mt-1 break-all font-mono text-xs text-muted-foreground">{activeRunId}</p>
-          <p className="mt-2 text-xs text-muted-foreground">
-            Orchestrator status:{" "}
-            <span className="font-medium text-foreground">{activeRunStatus ?? "—"}</span>
-          </p>
-          <a
-            className="mt-3 inline-flex text-xs font-medium text-primary underline underline-offset-2"
-            href={`/api/runs/${activeRunId}/events/history`}
-            target="_blank"
-            rel="noreferrer"
-          >
-            Open full event log (JSON)
-          </a>
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="font-medium text-foreground">Last run</p>
+              <p className="mt-1 break-all font-mono text-xs text-muted-foreground">{activeRunId}</p>
+              <p className="mt-2 text-xs text-muted-foreground">
+                Orchestrator status:{" "}
+                <span className="font-medium text-foreground">{activeRunStatus ?? "—"}</span>
+              </p>
+              <a
+                className="mt-3 inline-flex text-xs font-medium text-primary underline underline-offset-2"
+                href={`/api/runs/${activeRunId}/events/history`}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Open full event log (JSON)
+              </a>
+            </div>
+            {Object.keys(jobDetails).length > 0 && (
+              <div className="grid grid-cols-3 gap-3">
+                <div className="rounded-lg bg-background p-3 text-center ring-1 ring-border">
+                  <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Total cost</p>
+                  <p className="mt-1 text-lg font-bold text-emerald-600">
+                    ${Object.values(jobDetails).reduce((s, j) => s + (j.costUsd ?? 0), 0).toFixed(4)}
+                  </p>
+                </div>
+                <div className="rounded-lg bg-background p-3 text-center ring-1 ring-border">
+                  <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Tokens</p>
+                  <p className="mt-1 text-lg font-bold text-foreground">
+                    {Object.values(jobDetails).reduce((s, j) => s + (j.tokensUsed ?? 0), 0).toLocaleString()}
+                  </p>
+                </div>
+                <div className="rounded-lg bg-background p-3 text-center ring-1 ring-border">
+                  <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Jobs</p>
+                  <p className="mt-1 text-lg font-bold text-foreground">
+                    <span className="text-emerald-600">{Object.values(jobDetails).filter(j => j.status === "completed").length}</span>
+                    <span className="text-muted-foreground">/{Object.keys(jobDetails).length}</span>
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       ) : null}
 
@@ -473,6 +508,7 @@ export default function RunPage() {
             const deps = graph.depsByNode.get(stepId) ?? [];
             const type = graph.stepTypes.get(stepId);
             const status = statusByStep[stepId] ?? "idle";
+            const detail = jobDetails[stepId];
             return (
               <li
                 key={stepId}
@@ -493,6 +529,22 @@ export default function RunPage() {
                   depends on:{" "}
                   <span className="font-mono text-foreground">{deps.length ? deps.join(", ") : "—"}</span>
                 </p>
+                {(detail?.costUsd != null || detail?.tokensUsed != null) && (
+                  <div className="flex flex-wrap gap-3">
+                    {detail.costUsd != null && (
+                      <div className="rounded-lg bg-muted/50 px-2.5 py-1.5">
+                        <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Cost </span>
+                        <span className="font-mono text-xs font-semibold text-emerald-600">${detail.costUsd.toFixed(4)}</span>
+                      </div>
+                    )}
+                    {detail.tokensUsed != null && (
+                      <div className="rounded-lg bg-muted/50 px-2.5 py-1.5">
+                        <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Tokens </span>
+                        <span className="font-mono text-xs font-semibold text-foreground">{detail.tokensUsed.toLocaleString()}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
                 {budgetAlert?.jobId === stepId ? (
                   <div className="rounded-lg border border-amber-400/40 bg-amber-50 p-3 dark:bg-amber-950/30">
                     <p className="text-xs font-medium text-amber-700 dark:text-amber-300">⚠️ Awaiting funding — ${budgetAlert.spentUsd.toFixed(4)} / ${budgetAlert.limitUsd.toFixed(4)} budget</p>
