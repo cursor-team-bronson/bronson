@@ -60,6 +60,8 @@ export async function runAgent(
   const model = resolveAgentModel(jobConfig);
 
   let totalTokens = 0;
+  let totalPromptTokens = 0;
+  let totalCompletionTokens = 0;
   let totalCost = 0;
 
   for (let round = 0; round < maxRounds; round++) {
@@ -76,7 +78,13 @@ export async function runAgent(
     }
 
     const usage = response.usage;
-    if (usage) totalTokens += (usage.prompt_tokens ?? 0) + (usage.completion_tokens ?? 0);
+    if (usage) {
+      const pt = usage.prompt_tokens ?? 0;
+      const ct = usage.completion_tokens ?? 0;
+      totalPromptTokens += pt;
+      totalCompletionTokens += ct;
+      totalTokens += pt + ct;
+    }
     totalCost += Number((response as { cost?: number }).cost ?? 0);
 
     // Deduct from budget after each round. If exceeded, re-throw with the
@@ -113,6 +121,8 @@ export async function runAgent(
         output: msg.content ?? "",
         tokensUsed: totalTokens,
         costUsd: totalCost,
+        promptTokens: totalPromptTokens,
+        completionTokens: totalCompletionTokens,
       };
     }
 

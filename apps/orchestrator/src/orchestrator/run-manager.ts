@@ -4,6 +4,18 @@ import { resolveDAG } from "../parser/dag-resolver.js";
 import { eventLog, VersionMismatchError } from "../event-log/event-log.js";
 import { gateManager } from "../gates/gate-manager.js";
 import { runAgent } from "../agent-runner/clod-client.js";
+import {
+  persistBeginRun,
+  persistStepCompleted,
+  persistStepFailed,
+  persistStepGateApproved,
+  persistStepGatePending,
+  persistStepGateRejected,
+  persistStepRetry,
+  persistStepRunning,
+  persistWorkflowRunStatus,
+  persistWorkflowRunTerminal,
+} from "../persist/supabase-sync.js";
 import { budgetTracker, BudgetExceededError } from "./budget-tracker.js";
 
 const runs = new Map<string, RunState>();
@@ -31,7 +43,7 @@ function appendVersioned(
   }
 }
 
-export async function startRun(config: WorkflowConfig): Promise<RunState> {
+export async function startRun(config: WorkflowConfig, options?: { rawYaml?: string }): Promise<RunState> {
   const runId = uuidv4();
   const dag = resolveDAG(config);
 
@@ -64,11 +76,15 @@ export async function startRun(config: WorkflowConfig): Promise<RunState> {
 
   runs.set(runId, run);
 
+  await persistBeginRun({ runId, config, rawYaml: options?.rawYaml });
+
   eventLog.append(runId, "RUN_STARTED", undefined, { workflowName: config.name });
 
-  executeRun(run, config, dag.executionWaves).catch(err => {
+  executeRun(run, config, dag.executionWaves).catch(async err => {
     run.status = "failed";
+    run.completedAt = run.completedAt ?? new Date().toISOString();
     eventLog.append(runId, "RUN_FAILED", undefined, { error: String(err) });
+    await persistWorkflowRunTerminal(runId, "failed", run.completedAt);
   });
 
   return run;
@@ -108,8 +124,10 @@ async function executeRun(run: RunState, config: WorkflowConfig, waves: string[]
       )
     ) {
       run.status = "failed";
+      run.completedAt = new Date().toISOString();
       cancelAwaitingJobs(run, "Run halted due to job failure");
       eventLog.append(run.runId, "RUN_FAILED", undefined, { reason: "Job failed with on_failure: halt" });
+      await persistWorkflowRunTerminal(run.runId, "failed", run.completedAt);
       return;
     }
   }
@@ -123,12 +141,14 @@ async function executeRun(run: RunState, config: WorkflowConfig, waves: string[]
       reason: "One or more jobs failed after retries",
       failedJobIds,
     });
+    await persistWorkflowRunTerminal(run.runId, "failed", run.completedAt);
     return;
   }
 
   run.status = "completed";
   run.completedAt = new Date().toISOString();
   eventLog.append(run.runId, "RUN_COMPLETED");
+  await persistWorkflowRunTerminal(run.runId, "completed", run.completedAt);
 }
 
 function cancelAwaitingJobs(run: RunState, reason: string) {
@@ -154,6 +174,8 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
       if (out) upstreamOutputs[dep] = out;
     }
 
+    await persistStepRunning(run.runId, jobId, { attempt, maxAttempts, upstreamOutputs });
+
     try {
       const result = await runAgent(run.runId, { jobId, jobConfig, contextInput: "" }, upstreamOutputs);
       let finalOutput = result.output;
@@ -161,8 +183,10 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
       if (jobConfig.gate === "human") {
         jobState.status = "gate_pending";
         run.status = "gate_pending";
-        appendVersioned(run.runId, "GATE_PENDING", jobId, { proposedOutput: result.output });
-
+        await persistWorkflowRunStatus(run.runId, "gate_pending");
+        await persistStepGatePending(run.runId, jobId, result.output);
+        appendGateEvent(run.runId, "GATE_PENDING", jobId, { proposedOutput: result.output });
+        
         const decision = await gateManager.waitForApproval({
           runId: run.runId,
           jobId,
@@ -173,14 +197,17 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
         if (!decision.approved) {
           jobState.status = "failed";
           jobState.error = decision.reason ?? "Gate rejected";
-          appendVersioned(run.runId, "GATE_REJECTED", jobId, { reason: decision.reason });
+          await persistStepGateRejected(run.runId, jobId, decision.reason);
+          appendGateEvent(run.runId, "GATE_REJECTED", jobId, { reason: decision.reason });
           return;
         }
 
         if (decision.editedOutput) finalOutput = decision.editedOutput;
         jobState.status = "gate_approved";
+        await persistStepGateApproved(run.runId, jobId);
         run.status = gateManager.listPending(run.runId).length > 0 ? "gate_pending" : "running";
-        appendVersioned(run.runId, "GATE_APPROVED", jobId);
+        await persistWorkflowRunStatus(run.runId, run.status);
+        appendGateEvent(run.runId, "GATE_APPROVED", jobId);
       }
 
       jobState.status = "completed";
@@ -188,13 +215,15 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
       jobState.output = finalOutput;
       jobState.tokensUsed = result.tokensUsed;
       jobState.costUsd = result.costUsd;
-      appendVersioned(run.runId, "JOB_COMPLETED", jobId, {
+
+      await persistStepCompleted(run.runId, jobId, jobConfig, finalOutput, result);
+
+      eventLog.append(run.runId, "JOB_COMPLETED", jobId, {
         output: finalOutput,
         tokensUsed: result.tokensUsed,
         costUsd: result.costUsd,
       });
       return;
-
     } catch (err) {
       if (err instanceof BudgetExceededError) {
         jobState.status = "awaiting_funding";
@@ -268,16 +297,21 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
       jobState.retryCount = attempt;
       if (attempt < maxAttempts) {
         const delayMs = 500 * Math.pow(2, attempt - 1);
+
+        await persistStepRetry(run.runId, jobId, attempt, maxAttempts, String(err));
+
         eventLog.append(run.runId, "JOB_RETRY_WARNING", jobId, {
           attempt,
           maxAttempts,
           reason: String(err),
           nextRetryDelayMs: delayMs,
         });
+
         await new Promise(r => setTimeout(r, delayMs));
       } else {
         jobState.status = "failed";
         jobState.error = String(err);
+        await persistStepFailed(run.runId, jobId, String(err));
         eventLog.append(run.runId, "JOB_FAILED", jobId, { error: String(err) });
       }
     }
