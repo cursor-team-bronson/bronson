@@ -298,8 +298,14 @@ export default function RunPage() {
           <Button type="button" variant="outline" size="sm" onClick={loadFromStorage} disabled={isRunning}>
             Reload from editor
           </Button>
-          <Button type="button" variant="destructive" size="sm" onClick={stop} disabled={!isRunning}>
-            Stop listening
+          <Button type="button" variant="destructive" size="sm" onClick={async () => {
+            if (!activeRunId) { stop(); return; }
+            try {
+              await fetch(`/api/runs/${activeRunId}/stop`, { method: "POST" });
+            } catch {}
+            stop();
+          }} disabled={!isRunning}>
+            Kill Run
           </Button>
           <Button type="button" onClick={run} disabled={!runnable || isRunning}>
             Run
@@ -315,52 +321,74 @@ export default function RunPage() {
       ) : null}
 
       {budgetAlert ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-          <div className="mx-4 w-full max-w-lg rounded-2xl border border-amber-500/30 bg-white shadow-2xl dark:bg-zinc-900">
-            <div className="border-b border-amber-500/20 bg-amber-50 px-6 py-4 dark:bg-amber-950/30 rounded-t-2xl">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="mx-4 w-full max-w-lg overflow-hidden rounded-2xl border border-red-500/30 bg-white shadow-2xl dark:bg-zinc-900">
+            <div className="bg-red-50 px-6 py-5 dark:bg-red-950/40">
               <div className="flex items-center gap-3">
-                <span className="text-2xl">⚠️</span>
+                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-red-100 dark:bg-red-900/50">
+                  <span className="text-xl">🛑</span>
+                </div>
                 <div>
-                  <h2 className="text-lg font-semibold text-amber-900 dark:text-amber-200">Budget Exceeded</h2>
-                  <p className="text-sm text-amber-700 dark:text-amber-400">
-                    Job <code className="rounded bg-amber-200/50 px-1 font-mono text-xs dark:bg-amber-800/50">{budgetAlert.jobId}</code> needs funding to continue
+                  <h2 className="text-lg font-bold text-red-900 dark:text-red-200">Spending Limit Reached</h2>
+                  <p className="text-sm text-red-700 dark:text-red-400">
+                    Agent paused — top up to continue
                   </p>
                 </div>
               </div>
             </div>
-            <div className="space-y-4 px-6 py-5">
+
+            <div className="space-y-5 px-6 py-5">
+              <p className="text-sm text-zinc-600 dark:text-zinc-400">
+                Job <code className="rounded bg-zinc-100 px-1.5 py-0.5 font-mono text-xs font-semibold text-foreground dark:bg-zinc-800">{budgetAlert.jobId}</code> has
+                been <strong>automatically stopped</strong> after exceeding its budget.
+                No further API calls will be made until funded.
+              </p>
+
               <div className="grid grid-cols-2 gap-3">
-                <div className="rounded-lg bg-zinc-100 p-3 dark:bg-zinc-800">
-                  <p className="text-xs text-muted-foreground">Spent</p>
-                  <p className="text-lg font-bold text-red-600">${budgetAlert.spentUsd.toFixed(4)}</p>
+                <div className="rounded-xl bg-red-50 p-4 dark:bg-red-950/30">
+                  <p className="text-xs font-medium text-red-600 dark:text-red-400">Amount spent</p>
+                  <p className="mt-1 text-2xl font-bold text-red-700 dark:text-red-300">${budgetAlert.spentUsd.toFixed(4)}</p>
                 </div>
-                <div className="rounded-lg bg-zinc-100 p-3 dark:bg-zinc-800">
-                  <p className="text-xs text-muted-foreground">Budget limit</p>
-                  <p className="text-lg font-bold text-foreground">${budgetAlert.limitUsd.toFixed(4)}</p>
+                <div className="rounded-xl bg-zinc-100 p-4 dark:bg-zinc-800">
+                  <p className="text-xs font-medium text-muted-foreground">Budget limit</p>
+                  <p className="mt-1 text-2xl font-bold text-foreground">${budgetAlert.limitUsd.toFixed(4)}</p>
                 </div>
               </div>
-              <div className="rounded-lg border border-dashed border-zinc-300 bg-zinc-50 p-4 dark:border-zinc-700 dark:bg-zinc-800/50">
-                <p className="mb-2 text-xs font-medium text-muted-foreground">AllScale Checkout</p>
-                <p className="break-all font-mono text-xs text-foreground">{budgetAlert.checkoutUrl}</p>
-              </div>
-              <div className="flex gap-3">
+
+              <div className="space-y-3">
                 <a
                   href={budgetAlert.checkoutUrl}
                   target="_blank"
                   rel="noreferrer"
-                  className="flex-1 rounded-lg bg-emerald-600 px-4 py-2.5 text-center text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700"
+                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-3 text-sm font-bold text-white shadow-lg transition hover:bg-emerald-700 hover:shadow-xl"
                 >
-                  💳 Pay with USDC to Resume
+                  <span>💳</span> Top Up with USDC to Continue
                 </a>
-                <button
-                  onClick={() => setBudgetAlert(null)}
-                  className="rounded-lg border border-zinc-300 bg-white px-4 py-2.5 text-sm font-medium text-zinc-700 transition hover:bg-zinc-50 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
-                >
-                  Dismiss
-                </button>
+
+                <div className="flex gap-3">
+                  <button
+                    onClick={async () => {
+                      if (activeRunId) {
+                        try { await fetch(`/api/runs/${activeRunId}/stop`, { method: "POST" }); } catch {}
+                      }
+                      setBudgetAlert(null);
+                      stop();
+                    }}
+                    className="flex-1 rounded-xl border border-red-300 bg-white px-4 py-2.5 text-sm font-semibold text-red-700 transition hover:bg-red-50 dark:border-red-800 dark:bg-zinc-800 dark:text-red-400 dark:hover:bg-red-950/30"
+                  >
+                    🛑 Kill Run
+                  </button>
+                  <button
+                    onClick={() => setBudgetAlert(null)}
+                    className="flex-1 rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-medium text-zinc-600 transition hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-700"
+                  >
+                    Dismiss
+                  </button>
+                </div>
               </div>
+
               <p className="text-center text-xs text-muted-foreground">
-                Once paid, AllScale webhook confirms the on-chain transaction and the job resumes automatically.
+                Pay via AllScale → on-chain confirmation → webhook fires → agent resumes automatically
               </p>
             </div>
           </div>

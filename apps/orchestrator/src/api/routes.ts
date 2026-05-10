@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
 import { normalizeWorkflowYamlInput, parseWorkflowString } from "../parser/yaml-parser.js";
-import { startRun, getRun, listRuns, topUpJobBudget, cancelJobFunding } from "../orchestrator/run-manager.js";
+import { startRun, getRun, listRuns, topUpJobBudget, cancelJobFunding, stopRun } from "../orchestrator/run-manager.js";
 import { gateManager } from "../gates/gate-manager.js";
 import { eventLog } from "../event-log/event-log.js";
 import { streamRunEvents } from "./sse.js";
@@ -84,6 +84,13 @@ router.post("/runs/:runId/jobs/:jobId/fund", (req, res) => {
       return;
     }
     topUpJobBudget(req.params.runId, req.params.jobId, amountUsd, intentId);
+    res.json({ ok: true });
+  } catch (err) { res.status(400).json({ error: String(err) }); }
+});
+
+router.post("/runs/:runId/stop", (req, res) => {
+  try {
+    stopRun(req.params.runId);
     res.json({ ok: true });
   } catch (err) { res.status(400).json({ error: String(err) }); }
 });

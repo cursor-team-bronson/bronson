@@ -7,10 +7,12 @@ import { runAgent } from "../agent-runner/clod-client.js";
 import { budgetTracker, BudgetExceededError } from "./budget-tracker.js";
 
 const runs = new Map<string, RunState>();
+const killed = new Set<string>();
 
 export const getRun = (runId: string) => runs.get(runId);
 export const getRunDag = (runId: string) => getRun(runId)?.dag;
 export const listRuns = () => [...runs.values()];
+export const isKilled = (runId: string) => killed.has(runId);
 
 /** Append an event with optimistic concurrency — retries on version mismatch. */
 function appendVersioned(
@@ -101,8 +103,33 @@ export function cancelJobFunding(runId: string, jobId: string) {
   budgetTracker.cancelFunding(runId, jobId, "Funding cancelled by user");
 }
 
+export function stopRun(runId: string) {
+  const run = runs.get(runId);
+  if (!run) throw new Error(`Run ${runId} not found`);
+  if (run.status === "completed" || run.status === "failed")
+    throw new Error(`Run ${runId} already ${run.status}`);
+
+  killed.add(runId);
+  run.status = "failed";
+  run.completedAt = new Date().toISOString();
+  cancelAwaitingJobs(run, "Run killed by user");
+
+  for (const [jobId, jobState] of Object.entries(run.jobs)) {
+    if (jobState.status === "running" || jobState.status === "gate_pending") {
+      jobState.status = "failed";
+      jobState.error = "Run killed by user";
+    }
+    if (jobState.status === "pending") {
+      jobState.status = "skipped";
+    }
+  }
+
+  appendVersioned(runId, "RUN_FAILED", undefined, { reason: "Killed by user" });
+}
+
 async function executeRun(run: RunState, config: WorkflowConfig, waves: string[][]): Promise<void> {
   for (const wave of waves) {
+    if (killed.has(run.runId)) return;
     await Promise.all(wave.map(jobId => executeJob(run, config, jobId)));
     if (
       wave.some(
@@ -143,11 +170,13 @@ function cancelAwaitingJobs(run: RunState, reason: string) {
 }
 
 async function executeJob(run: RunState, config: WorkflowConfig, jobId: string): Promise<void> {
+  if (killed.has(run.runId)) return;
   const jobConfig = config.jobs[jobId];
   const jobState = run.jobs[jobId];
   const maxAttempts = 1 + (jobConfig.max_retries ?? 0);
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (killed.has(run.runId)) return;
     jobState.status = "running";
     jobState.startedAt = new Date().toISOString();
 
