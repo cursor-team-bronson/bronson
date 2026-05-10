@@ -27,7 +27,7 @@ npm run build -w @bronson/types
 
 Environment files:
 
-1. **Orchestrator** — Set `CLOD_API_KEY` in either the repo root `.env` or `apps/orchestrator/.env` (the server loads the first file that exists). You can start from `apps/orchestrator/.env.example`.
+1. **Orchestrator** — Set `CLOD_API_KEY` in either the repo root `.env` or `apps/orchestrator/.env` (the server loads the first file that exists). Set **`DEFAULT_AGENT_MODEL`** (or `CLOD_DEFAULT_MODEL`) to your provider’s **exact** model string whenever jobs omit `model:` in YAML — for CLōD copy the id from their docs (e.g. **`DEFAULT_AGENT_MODEL="DeepSeek V3"`**, see `apps/orchestrator/.env.example`). You can start from `apps/orchestrator/.env.example`.
 2. **Web (optional)** — `cp apps/web/.env.example apps/web/.env` if you change defaults (`ORCHESTRATOR_URL`, `NEXT_PUBLIC_ORCHESTRATOR_URL`).
 
 ## Development
@@ -55,6 +55,10 @@ See [`docs/AGENT_CONTEXT.md`](docs/AGENT_CONTEXT.md) for architecture, YAML sche
 ## Demo workflow
 
 Example pipeline: [`examples/pr-review-pipeline.yaml`](examples/pr-review-pipeline.yaml).
+
+Shell / CLōD tools POC: [`examples/with-shell-tool.yaml`](examples/with-shell-tool.yaml) — set **`ALLOW_SHELL_TOOL=true`** in the orchestrator environment (see [`apps/orchestrator/.env.example`](apps/orchestrator/.env.example)); details in [`docs/AGENT_CONTEXT.md`](docs/AGENT_CONTEXT.md).
+
+Write a local proof file via shell: [`examples/shell-write-local.yaml`](examples/shell-write-local.yaml) + run [`examples/post-shell-test.ps1`](examples/post-shell-test.ps1) (set **`TOOL_SHELL_CWD`** to your repo `examples` folder so `bronson-shell-proof.txt` appears there).
 
 ### Turborepo note
 

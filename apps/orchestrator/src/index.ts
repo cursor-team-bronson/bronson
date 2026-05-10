@@ -6,25 +6,57 @@ import cors from "cors";
 import { router } from "./api/routes.js";
 import { assertClodConfigured } from "./agent-runner/clod-client.js";
 
-(() => {
+/**
+ * Load multiple `.env` files so package-local settings override repo root.
+ * Previously we stopped at the first existing file, so `bronson/.env` hid
+ * `apps/orchestrator/.env` and left CLōD keys unset or stale.
+ */
+function loadMergedEnv(): string[] {
   const cwd = process.cwd();
-  const candidates = [
-    path.join(cwd, ".env"),
-    path.join(cwd, "apps", "orchestrator", ".env"),
-  ];
-  if (path.basename(cwd) === "orchestrator") {
-    candidates.push(path.join(cwd, "..", "..", ".env"));
-  }
-  for (const p of candidates) {
-    if (fs.existsSync(p)) {
-      loadEnv({ path: p });
-      return;
-    }
-  }
-  loadEnv();
-})();
+  const ordered: string[] =
+    path.basename(cwd) === "orchestrator"
+      ? [path.join(cwd, "..", "..", ".env"), path.join(cwd, ".env")]
+      : [path.join(cwd, ".env"), path.join(cwd, "apps", "orchestrator", ".env")];
 
+  const loaded: string[] = [];
+  const seen = new Set<string>();
+
+  for (const p of ordered) {
+    const abs = path.resolve(p);
+    if (seen.has(abs)) continue;
+    if (!fs.existsSync(abs)) continue;
+    seen.add(abs);
+    loadEnv({ path: abs, override: true });
+    loaded.push(abs);
+  }
+
+  if (loaded.length === 0) {
+    loadEnv();
+  }
+
+  return loaded;
+}
+
+const loadedEnvPaths = loadMergedEnv();
 assertClodConfigured();
+
+const modelFromEnv =
+  process.env.DEFAULT_AGENT_MODEL?.trim() ||
+  process.env.CLOD_DEFAULT_MODEL?.trim() ||
+  "";
+
+console.log("[bronson] Loaded .env files:", loadedEnvPaths.join(", ") || "(dotenv default search)");
+console.log(
+  "[bronson] CLōD endpoint:",
+  process.env.CLOD_BASE_URL?.trim() || "https://api.clod.io/v1 (default)",
+);
+console.log("[bronson] Default model:", JSON.stringify(modelFromEnv || "(none — set DEFAULT_AGENT_MODEL)"));
+console.log(
+  "[bronson] CLOD_API_KEY:",
+  process.env.CLOD_API_KEY?.trim()
+    ? `present (${process.env.CLOD_API_KEY.length} chars)`
+    : "MISSING",
+);
 
 const app = express();
 app.use(cors());

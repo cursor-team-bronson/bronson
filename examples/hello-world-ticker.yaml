@@ -1,4 +1,4 @@
-# One-shot test: POST body as YAML. For every 2 minutes + file append + RunCount: chmod +x run-hello-world-ticker.sh && ./run-hello-world-ticker.sh
+# One-shot test: POST to /api/runs. The agent’s text is in the run event log, not a file on disk, unless you save it (e.g. post-hello-world.ps1 -OutFile) or use run-hello-world-ticker.sh for a loop + file append.
 name: hello-world-ticker
 
 jobs:
@@ -8,6 +8,5 @@ jobs:
       Line 1: Hello World
       Line 2: Time: <ISO-8601 UTC timestamp for the current moment>
       Line 3: RunCount: 1
-    model: deepseek-v3
     gate: auto
     context_budget: 400

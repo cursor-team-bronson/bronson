@@ -1,0 +1,21 @@
+# Writes bronson-shell-proof.txt via the shell tool on the orchestrator host.
+#
+# Prerequisites:
+#   ALLOW_SHELL_TOOL=true
+# Optional: TOOL_SHELL_CWD=C:\path\to\folder  (where the .txt file should appear; defaults to orchestrator cwd)
+#
+name: shell-write-local
+
+jobs:
+  write_proof:
+    prompt: |
+      Invoke the shell tool exactly once.
+      Use this exact command string for the tool argument "command" (copy verbatim, one line):
+
+      cmd /c echo bronson-shell-proof>bronson-shell-proof.txt
+
+      Then reply with the single word: ok
+    tools: [shell]
+    tool_rounds_max: 8
+    gate: auto
+    context_budget: 2000
