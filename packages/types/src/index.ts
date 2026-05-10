@@ -12,6 +12,7 @@ export const JobConfigSchema = z.object({
   tool_rounds_max: z.number().int().min(1).max(64).default(12),
   on_failure: z.enum(["halt", "retry"]).default("halt"),
   max_retries: z.number().int().min(0).max(5).default(0),
+  budget_usd: z.number().positive().optional(),
 });
 
 export const WorkflowConfigSchema = z.object({
@@ -24,22 +25,34 @@ export type WorkflowConfig = z.infer<typeof WorkflowConfigSchema>;
 
 export type JobStatus =
   | "pending" | "running" | "gate_pending"
-  | "gate_approved" | "completed" | "failed" | "skipped";
+  | "gate_approved" | "awaiting_funding" | "completed" | "failed" | "skipped";
 
-export type RunStatus = "running" | "gate_pending" | "completed" | "failed";
+export type RunStatus = "running" | "gate_pending" | "awaiting_funding" | "completed" | "failed";
 
 export interface JobState {
   jobId: string; status: JobStatus;
   startedAt?: string; completedAt?: string;
   output?: string; tokensUsed?: number; costUsd?: number;
   retryCount: number; error?: string;
+  checkoutUrl?: string;
+}
+
+export interface SerializedDAGNode {
+  jobId: string;
+  dependencies: string[];
+  dependents: string[];
+}
+
+export interface SerializedDAG {
+  nodes: SerializedDAGNode[];
+  executionWaves: string[][];
 }
 
 export interface RunState {
-  runId: string; 
-  workflowName: string; 
+  runId: string;
+  workflowName: string;
   status: RunStatus;
-  createdAt: string; 
+  createdAt: string;
   completedAt?: string;
   jobs: Record<string, JobState>;
   dag?: SerializedDAG;
@@ -48,12 +61,12 @@ export interface RunState {
 export type EventType =
   | "RUN_STARTED" | "JOB_STARTED" | "JOB_COMPLETED" | "JOB_FAILED"
   | "JOB_RETRY_WARNING" | "GATE_PENDING" | "GATE_APPROVED" | "GATE_REJECTED"
+  | "BUDGET_EXCEEDED" | "BUDGET_FUNDED" | "JOB_RESUMED"
   | "RUN_COMPLETED" | "RUN_FAILED";
 
 export interface RunEvent {
   eventId: string; runId: string; jobId?: string;
   type: EventType; timestamp: string;
-  /** Monotonic per-run sequence for ordering and optimistic concurrency. */
   version: number;
   payload?: Record<string, unknown>;
 }
@@ -76,13 +89,11 @@ export interface AgentRunResult {
   completionTokens?: number;
 }
 
-export interface SerializedDAGNode {
+export interface BudgetExceededInfo {
+  runId: string;
   jobId: string;
-  dependencies: string[];
-  dependents: string[];
-}
-
-export interface SerializedDAG {
-  nodes: SerializedDAGNode[];
-  executionWaves: string[][];
+  spentUsd: number;
+  limitUsd: number;
+  checkoutUrl: string;
+  intentId: string;
 }

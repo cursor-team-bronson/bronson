@@ -4,6 +4,7 @@ import { buildJobContext } from "./context-router.js";
 import { eventLog } from "../event-log/event-log.js";
 import { resolveTools } from "./tool-registry.js";
 import { resolveAgentModel } from "./resolve-model.js";
+import { budgetTracker, BudgetExceededError } from "../orchestrator/budget-tracker.js";
 
 const clod = new OpenAI({
   baseURL: process.env.CLOD_BASE_URL ?? "https://api.clod.io/v1",
@@ -38,10 +39,16 @@ export function assertClodConfigured(): void {
   }
 }
 
-export async function runAgent(runId: string, options: AgentRunOptions, upstreamOutputs: Record<string, string>): Promise<AgentRunResult> {
+export async function runAgent(
+  runId: string,
+  options: AgentRunOptions,
+  upstreamOutputs: Record<string, string>,
+): Promise<AgentRunResult> {
   const { jobId, jobConfig } = options;
   const contextSection = buildJobContext(upstreamOutputs, jobConfig.context_budget);
-  const userMessage = contextSection ? `${contextSection}\n\n---\n\n${jobConfig.prompt}` : jobConfig.prompt;
+  const userMessage = contextSection
+    ? `${contextSection}\n\n---\n\n${jobConfig.prompt}`
+    : jobConfig.prompt;
 
   eventLog.append(runId, "JOB_STARTED", jobId);
 
@@ -79,6 +86,26 @@ export async function runAgent(runId: string, options: AgentRunOptions, upstream
       totalTokens += pt + ct;
     }
     totalCost += Number((response as { cost?: number }).cost ?? 0);
+
+    // Deduct from budget after each round. If exceeded, re-throw with the
+    // final output attached *only* when this was a terminal round (no tool
+    // calls). When the model returned tool_calls, content is null — passing
+    // undefined tells run-manager to retry the entire agent call after funding.
+    try {
+      await budgetTracker.deduct(runId, jobId, Number((response as { cost?: number }).cost ?? 0));
+    } catch (err) {
+      if (err instanceof BudgetExceededError) {
+        const msg = response.choices[0]?.message;
+        const isFinalAnswer = !msg?.tool_calls?.length && msg?.content != null;
+        throw new BudgetExceededError(
+          err.runId, err.jobId, err.spentUsd, err.limitUsd,
+          err.checkoutUrl, err.intentId,
+          isFinalAnswer ? msg!.content! : undefined,
+          totalTokens, totalCost,
+        );
+      }
+      throw err;
+    }
 
     const msg = response.choices[0]?.message;
     if (!msg) throw new Error("No assistant message in completion response");
