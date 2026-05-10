@@ -255,7 +255,7 @@ export function stopRun(runId: string) {
   killed.add(runId);
   run.status = "failed";
   run.completedAt = new Date().toISOString();
-  cancelAwaitingJobs(run, "Run killed by user");
+  cancelBudgetFundingAwaiters(run, "Run killed by user");
   gateManager.cancelAll(runId, "Run killed by user");
   for (const [_jobId, jobState] of Object.entries(run.jobs)) {
     if (jobState.status === "running" || jobState.status === "gate_pending" || jobState.status === "gate_approved" || jobState.status === "awaiting_funding") {
@@ -268,6 +268,15 @@ export function stopRun(runId: string) {
     }
   }
   appendRunEvent(runId, "RUN_FAILED", undefined, { reason: "Killed by user" });
+}
+
+/** Release jobs blocked on budget funding (side-effect only — does not change job status). Used by stopRun before applying explicit terminal statuses. */
+function cancelBudgetFundingAwaiters(run: RunState, reason: string): void {
+  for (const j of Object.values(run.jobs)) {
+    if (j.status === "awaiting_funding") {
+      budgetTracker.cancelFunding(run.runId, j.jobId, reason);
+    }
+  }
 }
 
 function cancelAwaitingJobs(run: RunState, reason: string): void {
@@ -478,6 +487,7 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
         { jobId, jobConfig, contextInput: "", abortSignal: ac.signal },
         upstreamOutputs,
       );
+      if (killed.has(run.runId)) return;
       let finalOutput = result.output;
 
       if (jobConfig.gate === "human") {

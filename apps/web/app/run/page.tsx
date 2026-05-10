@@ -438,6 +438,28 @@ export default function RunPage() {
     setIsRunning(false);
   }, []);
 
+  const requestKillRun = useCallback(async (): Promise<boolean> => {
+    if (!activeRunId) {
+      stop();
+      setBudgetAlert(null);
+      return true;
+    }
+    try {
+      const res = await fetch(`/api/runs/${activeRunId}/stop`, { method: "POST" });
+      const body = await res.text().catch(() => "");
+      if (!res.ok) {
+        setRunError(`Kill run failed (${res.status}): ${body.slice(0, 240) || res.statusText}`);
+        return false;
+      }
+      setBudgetAlert(null);
+      stop();
+      return true;
+    } catch (e) {
+      setRunError(e instanceof Error ? e.message : String(e));
+      return false;
+    }
+  }, [activeRunId, stop]);
+
   const beginWatchingRun = useCallback(
     (runId: string) => {
       const syncFromServer = async () => {
@@ -708,13 +730,7 @@ export default function RunPage() {
           <Button type="button" variant="outline" size="sm" onClick={loadFromStorage} disabled={isRunning}>
             Reload from editor
           </Button>
-          <Button type="button" variant="destructive" size="sm" onClick={async () => {
-            if (!activeRunId) { stop(); return; }
-            try {
-              await fetch(`/api/runs/${activeRunId}/stop`, { method: "POST" });
-            } catch {}
-            stop();
-          }} disabled={!isRunning}>
+          <Button type="button" variant="destructive" size="sm" onClick={() => void requestKillRun()} disabled={!isRunning}>
             Kill Run
           </Button>
           <Button type="button" onClick={() => void run()} disabled={isRunning || (!runnable && !mayContinuePersistedRun)}>
@@ -777,13 +793,8 @@ export default function RunPage() {
 
                 <div className="flex gap-3">
                   <button
-                    onClick={async () => {
-                      if (activeRunId) {
-                        try { await fetch(`/api/runs/${activeRunId}/stop`, { method: "POST" }); } catch {}
-                      }
-                      setBudgetAlert(null);
-                      stop();
-                    }}
+                    type="button"
+                    onClick={() => void requestKillRun()}
                     className="flex-1 rounded-xl border border-red-300 bg-white px-4 py-2.5 text-sm font-semibold text-red-700 transition hover:bg-red-50 dark:border-red-800 dark:bg-zinc-800 dark:text-red-400 dark:hover:bg-red-950/30"
                   >
                     🛑 Kill Run
