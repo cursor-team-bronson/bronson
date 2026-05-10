@@ -216,17 +216,45 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
           return;
         }
 
-        run.status = "running";
+        const stillAwaiting = budgetTracker.listAwaiting(run.runId).some(j => j.jobId !== jobId);
+        run.status = stillAwaiting ? "awaiting_funding" : "running";
         appendVersioned(run.runId, "JOB_RESUMED", jobId);
 
         if (err.output !== undefined) {
+          let finalOutput = err.output;
+
+          if (jobConfig.gate === "human") {
+            jobState.status = "gate_pending";
+            run.status = "gate_pending";
+            appendVersioned(run.runId, "GATE_PENDING", jobId, { proposedOutput: finalOutput });
+
+            const decision = await gateManager.waitForApproval({
+              runId: run.runId,
+              jobId,
+              proposedOutput: finalOutput,
+              context: Object.values(upstreamOutputs).join("\n\n"),
+            });
+
+            if (!decision.approved) {
+              jobState.status = "failed";
+              jobState.error = decision.reason ?? "Gate rejected";
+              appendVersioned(run.runId, "GATE_REJECTED", jobId, { reason: decision.reason });
+              return;
+            }
+
+            if (decision.editedOutput) finalOutput = decision.editedOutput;
+            jobState.status = "gate_approved";
+            run.status = gateManager.listPending(run.runId).length > 0 ? "gate_pending" : "running";
+            appendVersioned(run.runId, "GATE_APPROVED", jobId);
+          }
+
           jobState.status = "completed";
           jobState.completedAt = new Date().toISOString();
-          jobState.output = err.output;
+          jobState.output = finalOutput;
           jobState.tokensUsed = err.tokensUsed;
           jobState.costUsd = err.costUsd;
           appendVersioned(run.runId, "JOB_COMPLETED", jobId, {
-            output: err.output,
+            output: finalOutput,
             tokensUsed: err.tokensUsed,
             costUsd: err.costUsd,
           });
