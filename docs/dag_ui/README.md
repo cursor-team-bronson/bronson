@@ -21,23 +21,24 @@ Small reference for the **workflow YAML editor + DAG preview** work on the `ui` 
 3. **YAML conventions (preview + parser)**  
    - **`steps`**: array of objects with **`id`** (required for the graph).  
    - **Dependencies** (merged): `depends_on`, `deps`, `needs`, `requires` — string or list; unknown ids ignored.  
-   - **`ai_gate_after`**: must name a dep already listed for that step; the preview draws a direct edge from that dep → step in **sky** (`ai` edge style).  
-   - **`human_gate_after`**: same dep rule; the preview **inserts a synthetic “Human review” node** between that dep and the step (`human__<upstream>__<downstream>`); upstream → box is neutral; box → downstream step uses the **amber** (`human`) edge style. The logical YAML graph used for ordering/submit is unchanged—expansion is **preview-only**.
+   - **`human_gate_after` / `ai_gate_after`**: must name deps that are already listed for that step.  
+     - **AI gate**: direct edge from that dep → step is drawn in **sky** (`ai` edge style).  
+     - **Human gate**: preview **inserts a synthetic “Human review” node** between that dep and the step (`human__<upstream>__<downstream>`); upstream → box is neutral; box → downstream step uses the **amber** (`human`) edge style. The logical YAML graph used for ordering/submit is unchanged—expansion is **preview-only**.
 
 4. **Example workflow**  
    The default editor text demonstrates **fan-out** (`spawn-agent-swarm` → three `agent-*` steps), **merge**, **`ai_gate_after`** on each agent edge from the spawner, and **`human_gate_after`** on the final human release after merge.
 
-5. **Key files**
+## Key files
 
-   | Area | Path |
-   |------|------|
-   | Shared YAML + `parseDag` | `apps/web/lib/workflow-yaml.ts` |
-   | Top nav | `apps/web/components/app-nav.tsx` |
-   | DAG editor page | `apps/web/app/dag/page.tsx` |
-   | Simulated model runner | `apps/web/app/run/page.tsx` |
-   | SVG DAG | `apps/web/app/dag-preview.tsx` |
-   | Root redirect | `apps/web/app/page.tsx` → `/dag` |
-   | Client-only load of preview chunk | `next/dynamic` with `ssr: false` in `dag/page.tsx` |
+| Area | Path |
+|------|------|
+| Shared YAML + `parseDag` | `apps/web/lib/workflow-yaml.ts` |
+| Top nav | `apps/web/components/app-nav.tsx` |
+| DAG editor page | `apps/web/app/dag/page.tsx` |
+| Simulated model runner | `apps/web/app/run/page.tsx` |
+| SVG DAG | `apps/web/app/dag-preview.tsx` |
+| Root redirect | `apps/web/app/page.tsx` → `/dag` |
+| Client-only load of preview chunk | `next/dynamic` with `ssr: false` in `dag/page.tsx` |
 
 ## Dependencies (web)
 

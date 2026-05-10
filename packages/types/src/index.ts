@@ -2,11 +2,14 @@ import { z } from "zod";
 
 export const JobConfigSchema = z.object({
   prompt: z.string(),
-  model: z.string().default("deepseek-v3"),
+  /** Exact provider model id (e.g. CLōD: `DeepSeek V3`); omit to use DEFAULT_AGENT_MODEL / CLOD_DEFAULT_MODEL. */
+  model: z.string().min(1).optional(),
   depends_on: z.array(z.string()).optional().default([]),
   gate: z.enum(["auto", "human"]).default("auto"),
   context_budget: z.number().int().positive().default(2000),
   tools: z.array(z.string()).optional().default([]),
+  /** Max assistant rounds when tools are enabled (each round may include multiple tool calls). */
+  tool_rounds_max: z.number().int().min(1).max(64).default(12),
   on_failure: z.enum(["halt", "retry"]).default("halt"),
   max_retries: z.number().int().min(0).max(5).default(0),
 });
@@ -33,14 +36,18 @@ export interface JobState {
 }
 
 export interface RunState {
-  runId: string; workflowName: string; status: RunStatus;
-  createdAt: string; completedAt?: string;
+  runId: string; 
+  workflowName: string; 
+  status: RunStatus;
+  createdAt: string; 
+  completedAt?: string;
   jobs: Record<string, JobState>;
+  dag?: SerializedDAG;
 }
 
 export type EventType =
   | "RUN_STARTED" | "JOB_STARTED" | "JOB_COMPLETED" | "JOB_FAILED"
-  | "GATE_PENDING" | "GATE_APPROVED" | "GATE_REJECTED"
+  | "JOB_RETRY_WARNING" | "GATE_PENDING" | "GATE_APPROVED" | "GATE_REJECTED"
   | "RUN_COMPLETED" | "RUN_FAILED";
 
 export interface RunEvent {
@@ -62,4 +69,15 @@ export interface AgentRunOptions {
 }
 export interface AgentRunResult {
   output: string; tokensUsed: number; costUsd: number;
+}
+
+export interface SerializedDAGNode {
+  jobId: string;
+  dependencies: string[];
+  dependents: string[];
+}
+
+export interface SerializedDAG {
+  nodes: SerializedDAGNode[];
+  executionWaves: string[][];
 }

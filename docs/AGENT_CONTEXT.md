@@ -16,7 +16,9 @@ Use this document to onboard a new agent to the project. It covers the project g
 | **`@bronson/orchestrator`** ([`apps/orchestrator`](../apps/orchestrator)) | Long-lived Express process — YAML parsing, DAG execution, CLōD calls, gates, REST + SSE |
 | **`@bronson/web`** ([`apps/web`](../apps/web)) | Next.js (App Router) on port **3000** — POC UI + thin **same-origin** `/api/*` proxy to Express |
 
-**Agent integration:** CLōD (https://clod.io) — OpenAI-compatible API, used as the LLM layer for all agent calls. Multiple models available (deepseek-v3 for cheap steps, stronger models for gate-review summarization).
+**Agent integration:** Configure [**CLōD**](https://clod.io) or another **OpenAI-compatible** endpoint via `CLOD_BASE_URL` / API key. Job YAML may set `model` per job; if omitted, the orchestrator uses **`DEFAULT_AGENT_MODEL`** or **`CLOD_DEFAULT_MODEL`** (no hardcoded slug in code).
+
+**CLōD model IDs:** Use the **exact** string from CLōD’s dashboard / first API call docs (e.g. **`DeepSeek V3`** including capitalization and space — not `deepseek-v3`). In YAML use quotes: `model: "DeepSeek V3"`. In `.env` use quotes: `DEFAULT_AGENT_MODEL="DeepSeek V3"`.
 
 ---
 
@@ -28,7 +30,9 @@ apps/orchestrator/src/
   parser/yaml-parser.ts        — Parse & validate workflow YAML strings/files
   parser/dag-resolver.ts       — Topological sort, cycle detection, wave building
   event-log/event-log.ts       — Append-only in-memory event log with pub/sub
-  agent-runner/clod-client.ts  — CLōD via OpenAI SDK, fires agent calls
+  agent-runner/clod-client.ts  — CLōD via OpenAI SDK (multi-turn tool loop when tools enabled)
+  agent-runner/tool-registry.ts — YAML tool names → OpenAI tools + executors (POC: shell)
+  agent-runner/shell-tool.ts    — Spawn shell commands with timeouts / limits (ALLOW_SHELL_TOOL)
   agent-runner/context-router.ts — Trims upstream outputs to token budget
   gates/gate-manager.ts        — Human gate pause/resume via promise map
   orchestrator/run-manager.ts   — Wave-based parallel executor with retry/backoff
@@ -40,6 +44,7 @@ apps/web/app/
   api/[...path]/route.ts       — Proxies to orchestrator /api/*
 examples/
   pr-review-pipeline.yaml      — Demo: analyze → suggest → [human gate] → apply
+  with-shell-tool.yaml         — POC job with tools: [shell] (requires ALLOW_SHELL_TOOL=true)
 ```
 
 ---
@@ -79,7 +84,15 @@ Upstream job outputs are passed to downstream jobs as a formatted string block. 
 
 ### CLōD Integration
 
-Uses the OpenAI SDK pointed at CLōD's base URL. Each job specifies its own `model`. No streaming yet — single `chat.completions.create` call per job.
+Uses the OpenAI SDK pointed at CLōD's base URL. Each job specifies its own `model`. Jobs **without** `tools` use a single completion (plus upstream context). Jobs **with** `tools` run a **multi-turn** loop: each completion may include `tool_calls`; the orchestrator executes tools locally, appends `role: "tool"` messages, and calls the API again until the assistant returns plain content or `tool_rounds_max` is exceeded. Token and cost usage are summed across rounds.
+
+### Shell tool (POC)
+
+- YAML lists tool names, e.g. `tools: [shell]`. Only **`shell`** is implemented for the hackathon POC.
+- The model receives an OpenAI-style **function** tool named `shell` with argument `{ command: string }`. Execution uses Node **`spawn(..., { shell: true })`** on the orchestrator host — effectively arbitrary shell access if enabled.
+- **Opt-in:** set **`ALLOW_SHELL_TOOL=true`** on the orchestrator. If a job lists `shell` without this, startup of that job fails fast with a clear error.
+- **Guards (env):** `TOOL_SHELL_CWD`, `TOOL_SHELL_TIMEOUT_MS`, `TOOL_SHELL_MAX_OUTPUT_BYTES`, optional **`TOOL_SHELL_ALLOWLIST_REGEX`** (command must match before running).
+- **Do not** expose this end-to-end to untrusted users without auth and stronger isolation (containers, dedicated user, etc.).
 
 ### Base URLs for API calls
 
@@ -88,6 +101,12 @@ Uses the OpenAI SDK pointed at CLōD's base URL. Each job specifies its own `mod
 | curl / scripts | `http://localhost:3001` | Direct to Express |
 | Browser (same-origin) | `http://localhost:3000` | Next proxies `/api/*` → orchestrator via `ORCHESTRATOR_URL` |
 | Browser (SSE / health POC) | `NEXT_PUBLIC_ORCHESTRATOR_URL` (default `http://127.0.0.1:3001`) | Avoids implementing SSE streaming through Next for the POC |
+
+### Debugging CLōD errors and “no credits used”
+
+- **Usage and billing** live in the **CLōD dashboard** ([app.clod.io](https://app.clod.io)) — API keys, model access, and consumption history. Bronson does not show CLōD credits; only **`JOB_COMPLETED`** events carry `tokensUsed` / `costUsd` when the provider returns them.
+- If the API returns **403**, **401**, or similar **before** a successful completion, **little or no usage is charged** — so credits may not move even though the orchestrator ran. Typical causes: wrong or inactive **`CLOD_API_KEY`**, **`CLOD_BASE_URL`** typo, or **`DEFAULT_AGENT_MODEL` / `model:`** set to a slug your account cannot call (CLōD returns “Forbidden resource” in those cases).
+- **Visibility:** Inspect **`GET /api/runs/:runId/events/history`** for **`JOB_FAILED`** — the payload includes the error string. With tools enabled, some providers restrict **function calling** on certain models; try another model slug from the CLōD docs if 403 persists.
 
 ---
 
@@ -99,11 +118,12 @@ name: pipeline-name
 jobs:
   job_id:
     prompt: "..."                # Required. Sent to the agent as user message.
-    model: deepseek-v3           # Any CLōD model slug.
+    model: "DeepSeek V3"           # Optional; CLōD expects exact id from their docs. Omit to use DEFAULT_AGENT_MODEL env.
     depends_on: [other_job_id]   # DAG edges. Omit for root jobs.
     gate: auto                   # auto | human. Human = pause for approval.
     context_budget: 2000         # Max tokens of upstream output to inject.
-    tools: []                    # Tool names (not yet wired — see open issues).
+    tools: []                    # Tool names; POC supports: shell (requires ALLOW_SHELL_TOOL=true).
+    tool_rounds_max: 12          # Max assistant rounds when tools are non-empty (default 12).
     on_failure: halt             # halt | retry.
     max_retries: 0               # Attempts = 1 + max_retries.
 ```
@@ -168,13 +188,9 @@ Rich DAG visualization, gate approval UI, billing dashboards, and tool integrati
 
 ## Open Issues / What Needs Building Next
 
-### 1. Tool Support (not wired yet)
+### 1. More tools / integrations
 
-The YAML schema has a `tools: []` field but the agent runner ignores it. Need to:
-
-- Define tool implementations (at minimum: Greptile code search)
-- Pass tool definitions to CLōD via `tools` param in `chat.completions.create`
-- Handle `tool_calls` in the response and run tool execution before returning output
+YAML `tools` + CLōD function calling are wired for **`shell`** (see Shell tool section). Further tools (e.g. Greptile code search, read-only file scopes) are not implemented yet.
 
 ### 2. Streaming Agent Output
 
@@ -215,6 +231,17 @@ Currently CORS is wide open (`cors()`). Before exposing to the internet, add ori
 PORT=3001
 CLOD_API_KEY=<your key from https://app.clod.io>
 CLOD_BASE_URL=https://api.clod.io/v1
+
+# Default model when jobs omit `model:` (required unless every job sets model)
+DEFAULT_AGENT_MODEL="DeepSeek V3"
+# CLOD_DEFAULT_MODEL="DeepSeek V3"
+
+# Shell tool (optional; dangerous)
+ALLOW_SHELL_TOOL=false
+# TOOL_SHELL_CWD=
+# TOOL_SHELL_TIMEOUT_MS=60000
+# TOOL_SHELL_MAX_OUTPUT_BYTES=131072
+# TOOL_SHELL_ALLOWLIST_REGEX=
 ```
 
 **Web** (`apps/web/.env` — optional; see `apps/web/.env.example`):
@@ -232,7 +259,7 @@ NEXT_PUBLIC_ORCHESTRATOR_URL=http://127.0.0.1:3001
 npm install
 npm run build -w @bronson/types
 cp apps/orchestrator/.env.example apps/orchestrator/.env
-# Edit apps/orchestrator/.env — set CLOD_API_KEY
+# Edit apps/orchestrator/.env — set CLOD_API_KEY and DEFAULT_AGENT_MODEL (if examples omit per-job model)
 npm run dev
 ```
 
@@ -241,10 +268,10 @@ npm run dev
 
 ### Start a run (PowerShell)
 
-Read the demo YAML into a JSON-safe string and POST:
+Read the demo YAML into a JSON-safe string and POST (use **`-Raw`** so `$yaml` is one string; without it, `Get-Content` returns an array of lines — the API now accepts both shapes, but `-Raw` is what you want):
 
 ```powershell
-$yaml = Get-Content -Raw examples/pr-review-pipeline.yaml
+$yaml = Get-Content -Path examples/pr-review-pipeline.yaml -Raw
 $body = @{ yaml = $yaml } | ConvertTo-Json
 Invoke-RestMethod -Uri http://localhost:3001/api/runs -Method POST -Body $body -ContentType "application/json"
 ```
