@@ -80,6 +80,83 @@ function asArray(value: unknown): string[] {
   return [];
 }
 
+/** Declaration index for stable ordering among mutually independent steps. */
+function declarationIndex(nodes: string[]): Map<string, number> {
+  return new Map(nodes.map((id, i) => [id, i]));
+}
+
+/**
+ * Kahn-style topological order: each wave is all currently runnable steps (in-degree 0),
+ * sorted by YAML declaration order, then the next wave. Matches orchestrator execution waves
+ * flattened left-to-right.
+ */
+/**
+ * Returns a topological order, or `null` if the graph has a cycle or stuck state
+ * (no runnable node while work remains — must not spin forever).
+ */
+function kahnTopologicalOrder(nodes: string[], depsByNode: Map<string, string[]>): string[] | null {
+  const decl = declarationIndex(nodes);
+  const dependents = new Map<string, string[]>();
+  for (const id of nodes) dependents.set(id, []);
+  for (const id of nodes) {
+    for (const d of depsByNode.get(id) ?? []) {
+      dependents.get(d)!.push(id);
+    }
+  }
+  const inDegree = new Map<string, number>();
+  for (const id of nodes) inDegree.set(id, (depsByNode.get(id) ?? []).length);
+
+  const remaining = new Set(nodes);
+  const order: string[] = [];
+  const byDecl = (a: string, b: string) => (decl.get(a)! - decl.get(b)!);
+
+  while (remaining.size > 0) {
+    const wave = [...remaining]
+      .filter((id) => inDegree.get(id)! === 0)
+      .sort(byDecl);
+    if (wave.length === 0) {
+      return null;
+    }
+    for (const id of wave) {
+      order.push(id);
+      remaining.delete(id);
+    }
+    for (const id of wave) {
+      for (const m of dependents.get(id) ?? []) {
+        inDegree.set(m, inDegree.get(m)! - 1);
+      }
+    }
+  }
+  return order;
+}
+
+function findCyclePath(nodes: string[], depsByNode: Map<string, string[]>): string[] | null {
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  let cyclePath: string[] | null = null;
+
+  const dfs = (node: string, path: string[]) => {
+    if (cyclePath) return;
+    if (visiting.has(node)) {
+      const start = path.indexOf(node);
+      cyclePath = start >= 0 ? [...path.slice(start), node] : [node, node];
+      return;
+    }
+    if (visited.has(node)) return;
+
+    visiting.add(node);
+    const nextPath = [...path, node];
+    for (const dep of depsByNode.get(node) ?? []) {
+      dfs(dep, nextPath);
+    }
+    visiting.delete(node);
+    visited.add(node);
+  };
+
+  for (const node of nodes) dfs(node, []);
+  return cyclePath;
+}
+
 export function parseDag(text: string): GraphResult {
   try {
     const parsed = yaml.load(text) as { steps?: Step[] } | undefined;
@@ -125,31 +202,16 @@ export function parseDag(text: string): GraphResult {
       if (aiGates.length > 0) aiGateByNode.set(step.id, Array.from(new Set(aiGates)));
     }
 
-    const visiting = new Set<string>();
-    const visited = new Set<string>();
-    const topo: string[] = [];
-    let cyclePath: string[] | null = null;
-
-    const dfs = (node: string, path: string[]) => {
-      if (cyclePath) return;
-      if (visiting.has(node)) {
-        const start = path.indexOf(node);
-        cyclePath = start >= 0 ? [...path.slice(start), node] : [node, node];
-        return;
+    let cyclePath = findCyclePath(nodes, depsByNode);
+    let topoOrder: string[] = [];
+    if (!cyclePath) {
+      const kahn = kahnTopologicalOrder(nodes, depsByNode);
+      if (kahn === null) {
+        cyclePath = ["(dependency cycle — could not flatten graph)"];
+      } else {
+        topoOrder = kahn;
       }
-      if (visited.has(node)) return;
-
-      visiting.add(node);
-      const nextPath = [...path, node];
-      for (const dep of depsByNode.get(node) ?? []) {
-        dfs(dep, nextPath);
-      }
-      visiting.delete(node);
-      visited.add(node);
-      topo.push(node);
-    };
-
-    for (const node of nodes) dfs(node, []);
+    }
 
     return {
       nodes,
@@ -157,7 +219,7 @@ export function parseDag(text: string): GraphResult {
       humanGateByNode,
       aiGateByNode,
       stepTypes,
-      topoOrder: cyclePath ? [] : topo,
+      topoOrder,
       cyclePath,
       parseError: null,
     };
