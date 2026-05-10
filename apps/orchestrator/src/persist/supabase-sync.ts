@@ -347,6 +347,8 @@ function mapDbJobStatus(s: string): JobStatus {
       return "completed";
     case "failed":
       return "failed";
+    case "awaiting_funding":
+      return "awaiting_funding";
     default:
       return "pending";
   }
@@ -358,6 +360,8 @@ function mapDbRunStatus(s: string): RunStatus {
       return "running";
     case "gate_pending":
       return "gate_pending";
+    case "awaiting_funding":
+      return "awaiting_funding";
     case "completed":
       return "completed";
     case "failed":
