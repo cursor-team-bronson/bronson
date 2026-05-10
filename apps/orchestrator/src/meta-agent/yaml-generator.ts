@@ -9,13 +9,29 @@ const clod = new OpenAI({
 });
 
 function loadSkillsCatalog(): string {
+  const cwd = process.cwd();
   const candidates = [
-    path.resolve(process.cwd(), "SKILLS.md"),
-    path.resolve(process.cwd(), "../../SKILLS.md"),
-    path.resolve(__dirname, "../../../../SKILLS.md"),
+    path.resolve(cwd, "SKILLS.md"),
+    path.resolve(cwd, "../../SKILLS.md"),
+    path.resolve(cwd, "apps/orchestrator/SKILLS.md"),
   ];
+
+  // __dirname is always available in CJS (compiled tsc output) and patched by
+  // tsx in dev. Only use it if it's actually defined — avoids a ReferenceError
+  // in pure-ESM runtimes that skip the shim.
+  try {
+    if (typeof __dirname === "string") {
+      candidates.push(
+        path.resolve(__dirname, "../../../../SKILLS.md"),
+        path.resolve(__dirname, "../../SKILLS.md"),
+      );
+    }
+  } catch { /* __dirname undefined — skip */ }
+
   for (const p of candidates) {
-    if (fs.existsSync(p)) return fs.readFileSync(p, "utf-8");
+    try {
+      if (fs.existsSync(p)) return fs.readFileSync(p, "utf-8");
+    } catch { /* skip inaccessible paths */ }
   }
   return "No SKILLS.md found — generate a reasonable workflow based on the description.";
 }

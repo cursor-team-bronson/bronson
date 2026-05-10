@@ -47,7 +47,7 @@ export async function runAgent(
       throw new BudgetExceededError(
         err.runId, err.jobId, err.spentUsd, err.limitUsd,
         err.checkoutUrl, err.intentId,
-        output,
+        output, tokensUsed, costUsd,
       );
     }
     throw err;

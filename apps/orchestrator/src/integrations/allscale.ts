@@ -34,6 +34,9 @@ export async function ping(): Promise<unknown> {
   const path = "/v1/test/ping";
   const headers = await buildHeaders("GET", path);
   const res = await fetch(`${BASE_URL}${path}`, { headers });
+  if (!res.ok) {
+    throw new Error(`AllScale ping failed: HTTP ${res.status} ${res.statusText}`);
+  }
   return res.json();
 }
 
@@ -86,7 +89,13 @@ export async function getCheckoutStatus(intentId: string): Promise<number> {
   const path = `/v1/checkout_intents/${intentId}/status`;
   const headers = await buildHeaders("GET", path);
   const res = await fetch(`${BASE_URL}${path}`, { headers });
-  const data = await res.json() as { payload: number };
+  if (!res.ok) {
+    throw new Error(`AllScale getCheckoutStatus failed: HTTP ${res.status} ${res.statusText}`);
+  }
+  const data = await res.json() as { code: number; payload: number; error?: { message?: string } };
+  if (data.code !== 0) {
+    throw new Error(`AllScale getCheckoutStatus error: ${data.error?.message ?? JSON.stringify(data)}`);
+  }
   return data.payload;
 }
 

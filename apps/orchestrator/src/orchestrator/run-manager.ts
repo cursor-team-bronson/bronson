@@ -216,11 +216,16 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
         appendVersioned(run.runId, "JOB_RESUMED", jobId);
 
         if (err.output !== undefined) {
-          // LLM output was already produced before the budget was exceeded — use it directly
           jobState.status = "completed";
           jobState.completedAt = new Date().toISOString();
           jobState.output = err.output;
-          appendVersioned(run.runId, "JOB_COMPLETED", jobId, { output: err.output });
+          jobState.tokensUsed = err.tokensUsed;
+          jobState.costUsd = err.costUsd;
+          appendVersioned(run.runId, "JOB_COMPLETED", jobId, {
+            output: err.output,
+            tokensUsed: err.tokensUsed,
+            costUsd: err.costUsd,
+          });
           return;
         }
 

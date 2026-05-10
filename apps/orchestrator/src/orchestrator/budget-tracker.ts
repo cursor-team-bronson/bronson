@@ -10,6 +10,8 @@ export class BudgetExceededError extends Error {
     readonly intentId: string,
     /** LLM output already produced before the budget was exceeded — avoids a duplicate call on resume. */
     readonly output?: string,
+    readonly tokensUsed?: number,
+    readonly costUsd?: number,
   ) {
     super(
       `Job "${jobId}" exceeded budget $${limitUsd.toFixed(4)} (spent $${spentUsd.toFixed(4)}). Fund at: ${checkoutUrl}`,
@@ -89,15 +91,29 @@ class BudgetTracker {
    * Suspend execution until funds arrive. Returns a Promise that resolves
    * when topUp() is called (e.g. from the AllScale webhook).
    * Rejects after timeoutMs if never funded (default: 1 hour).
+   *
+   * Race-safe: if topUp() was called before waitForFunding() (e.g. webhook
+   * arrived while run-manager was emitting events), the settled flag is
+   * already true and we resolve immediately without blocking.
    */
   waitForFunding(runId: string, jobId: string, timeoutMs = 3_600_000): Promise<void> {
     const k = this.key(runId, jobId);
     const entry = this.state.get(k);
     if (!entry) return Promise.resolve();
 
+    if (entry.settled) {
+      entry.awaiting = false;
+      return Promise.resolve();
+    }
+
     entry.awaiting = true;
-    entry.settled = false;
     return new Promise<void>((resolve, reject) => {
+      if (entry.settled) {
+        entry.awaiting = false;
+        resolve();
+        return;
+      }
+
       entry.resolve = resolve;
       entry.reject = reject;
 
@@ -163,7 +179,13 @@ class BudgetTracker {
   listAwaiting(runId: string) {
     return [...this.state.entries()]
       .filter(([k, v]) => k.startsWith(runId + "::") && v.awaiting)
-      .map(([k, v]) => ({ jobId: k.split("::")[1], ...v }));
+      .map(([k, v]) => ({
+        jobId: k.split("::")[1],
+        limitUsd: v.limitUsd,
+        spentUsd: v.spentUsd,
+        intentId: v.intentId,
+        checkoutUrl: v.checkoutUrl,
+      }));
   }
 }
 
