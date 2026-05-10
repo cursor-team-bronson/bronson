@@ -4,7 +4,7 @@ import { resolveDAG } from "../parser/dag-resolver.js";
 import { eventLog, VersionMismatchError } from "../event-log/event-log.js";
 import { gateManager } from "../gates/gate-manager.js";
 import { runAgent } from "../agent-runner/clod-client.js";
-import { normalizeWorkflowYamlInput, parseWorkflowString } from "../parser/yaml-parser.js";
+import { parseWorkflowString } from "../parser/yaml-parser.js";
 import {
   buildRunStateFromPersistence,
   fetchJobRows,
@@ -27,10 +27,6 @@ function trackRunExecution(runId: string, p: Promise<void>): void {
   void p.finally(() => {
     if (runExecutionPromises.get(runId) === p) runExecutionPromises.delete(runId);
   });
-}
-
-function canonicalWorkflowYamlForCompare(raw: string): string {
-  return normalizeWorkflowYamlInput(raw).replace(/\r\n/g, "\n").trim();
 }
 
 function normalizeJobsForResume(run: RunState): void {
@@ -137,31 +133,33 @@ export async function startRun(config: WorkflowConfig, workflowYamlSnapshot: str
 }
 
 /**
- * Continue an existing persisted run from the first still-actionable jobs (skips completed/skipped/failed).
- * Returns null if persistence is off, snapshot/YAML mismatch, run is fully done, or only failed jobs remain.
+ * Continue a persisted run using the workflow YAML stored in Supabase (ignores the editor string).
+ * Drops any stale in-memory copy so a browser refresh always picks up latest job rows from the DB.
+ * Skips completed/skipped/failed jobs; returns null if persistence is off, snapshot missing, fully done,
+ * or only failed jobs remain.
  */
-export async function tryResumeRun(
-  resumeRunId: string,
-  config: WorkflowConfig,
-  workflowYamlSnapshot: string,
-): Promise<RunState | null> {
-  const rid = resumeRunId.trim();
-  if (!rid) return null;
-  if (!isJobPersistenceEnabled()) return null;
+export async function continuePersistedRun(runId: string): Promise<RunState | null> {
+  const rid = runId.trim();
+  if (!rid || !isJobPersistenceEnabled()) return null;
 
   if (runExecutionPromises.has(rid)) {
     const inFlight = getRun(rid);
     if (inFlight) return inFlight;
   }
 
+  runs.delete(rid);
+
   const snap = await fetchRunSnapshot(rid);
   if (!snap) return null;
-  if (canonicalWorkflowYamlForCompare(snap.workflow_yaml) !== canonicalWorkflowYamlForCompare(workflowYamlSnapshot)) {
+
+  let config: WorkflowConfig;
+  try {
+    config = parseWorkflowString(snap.workflow_yaml);
+  } catch {
     return null;
   }
 
-  let run = getRun(rid);
-  if (!run) run = (await hydrateRunFromDb(rid)) ?? undefined;
+  const run = (await hydrateRunFromDb(rid)) ?? undefined;
   if (!run) return null;
 
   const allDone = Object.values(run.jobs).every((j) => j.status === "completed" || j.status === "skipped");
@@ -180,7 +178,7 @@ export async function tryResumeRun(
   run.status = "running";
   delete run.completedAt;
   void persistRunStatus(rid, "running");
-  await persistRunStart(rid, config.name, workflowYamlSnapshot);
+  await persistRunStart(rid, config.name, snap.workflow_yaml);
   eventLog.append(rid, "RUN_RESUMED", undefined, { workflowName: config.name });
 
   const dag = resolveDAG(config);

@@ -5,7 +5,7 @@ import {
   listRuns,
   retryJobAndContinue,
   ensureRunLoaded,
-  tryResumeRun,
+  continuePersistedRun,
 } from "../orchestrator/run-manager.js";
 import { stopJobRequest } from "../orchestrator/job-abort-registry.js";
 import { gateManager } from "../gates/gate-manager.js";
@@ -17,26 +17,40 @@ export const router = Router();
 router.post("/runs", async (req: Request, res: Response) => {
   try {
     const body = req.body as { yaml?: unknown; resumeRunId?: unknown };
-    const yamlStr = normalizeWorkflowYamlInput(body.yaml);
-    if (!yamlStr.trim()) {
-      res.status(400).json({ error: "yaml field required" });
-      return;
-    }
-    const parsed = parseWorkflowString(yamlStr);
     const resumeRaw = body.resumeRunId;
     const resumeRunId = typeof resumeRaw === "string" ? resumeRaw.trim() : "";
     if (resumeRunId) {
-      const resumed = await tryResumeRun(resumeRunId, parsed, yamlStr);
+      const resumed = await continuePersistedRun(resumeRunId);
       if (resumed) {
         res.status(200).json(resumed);
         return;
       }
     }
+    const yamlStr = normalizeWorkflowYamlInput(body.yaml);
+    if (!yamlStr.trim()) {
+      res.status(400).json({ error: "yaml field required (or invalid resumeRunId / nothing to resume)" });
+      return;
+    }
+    const parsed = parseWorkflowString(yamlStr);
     res.status(201).json(await startRun(parsed, yamlStr));
   } catch (err) { res.status(400).json({ error: String(err) }); }
 });
 
 router.get("/runs", (_req, res) => res.json(listRuns()));
+
+/** Continue a persisted run from Supabase snapshot (no editor YAML required). */
+router.post("/runs/:runId/continue", async (req, res) => {
+  try {
+    const continued = await continuePersistedRun(req.params.runId);
+    if (!continued) {
+      res.status(404).json({ error: "Run not found, persistence disabled, or nothing to continue" });
+      return;
+    }
+    res.status(200).json(continued);
+  } catch (err) {
+    res.status(400).json({ error: String(err) });
+  }
+});
 
 /** Re-run one failed job using upstream outputs from DB, then continue dependents in-process. */
 router.post("/runs/:runId/jobs/:jobId/retry", async (req, res) => {
