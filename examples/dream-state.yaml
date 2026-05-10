@@ -1,0 +1,251 @@
+# dream-state — local memory consolidation pipeline
+#
+# Mirrors Claude Code's Dream feature: reads your project memory store and
+# recent git history, deduplicates and reconciles them across three knowledge
+# planes, then emits a reviewable output WITHOUT modifying the source.
+#
+# Ontology:
+#   Memory store   → CLAUDE.md / .cursor/memory.md (input, never overwritten)
+#   Session signal → git log, diffs, recent commits
+#   Dream job      → this DAG (async, non-destructive, reviewable)
+#   Output store   → .dream/memory-output.md (promote manually after review)
+#
+# Prerequisites (apps/orchestrator/.env):
+#   ALLOW_SHELL_TOOL=true
+#   TOOL_SHELL_CWD=<absolute path to your project root>
+#   TOOL_SHELL_ALLOWLIST_REGEX=.*
+#     (or tighter: ^(cat|git|find|mkdir|tee|printf|cp|ls))
+#
+# Four-stage pipeline:
+#   Orient   → Wave 0: scan memory + git history + project docs (parallel)
+#   Gather   → Wave 1: analyze code structure, product intent, conventions (parallel)
+#   Consolidate → Wave 2: deduplicate, reconcile, surface new insights
+#   Prune    → Wave 3+: human review gate → non-destructive file emit
+
+name: dream-state
+
+jobs:
+  # ─── Wave 0: orient (parallel gather from three sources) ──────────────────
+
+  scan_memory:
+    prompt: |
+      You are reading the existing project memory store.
+
+      Use the shell tool to read the project's memory files. Try each command
+      in order and stop once you get meaningful content:
+
+        cat CLAUDE.md
+        cat .cursor/memory.md
+        cat .ai/memory.md
+
+      If none exist, run:
+        find . -maxdepth 3 -name "*.md" -not -path "*/node_modules/*" \
+               -not -path "*/.git/*" | head -20
+
+      Collect everything you find and output it verbatim, labeled by filename.
+      If absolutely nothing exists, output exactly: NO_MEMORY_FOUND
+    tools: [shell]
+    tool_rounds_max: 6
+    gate: auto
+    context_budget: 6000
+    model: "deepseek-v3"
+
+  scan_git_history:
+    prompt: |
+      You are mining recent git history for project insights.
+
+      Use the shell tool to run these three commands and collect their output:
+
+        git log --oneline --no-merges -50
+        git diff HEAD~10..HEAD --stat
+        git log --format="%s%n%b" --no-merges -20
+
+      Output the raw results verbatim, clearly labeled per command.
+      If git is unavailable or the repo has fewer commits than requested,
+      output whatever is returned and note the limitation.
+      If git is entirely absent, output: NO_GIT_HISTORY
+    tools: [shell]
+    tool_rounds_max: 6
+    gate: auto
+    context_budget: 6000
+    model: "deepseek-v3"
+
+  scan_project_docs:
+    prompt: |
+      You are collecting project documentation and directory context.
+
+      Use the shell tool to gather structural context in order:
+
+        ls -la
+        find . -maxdepth 3 -name "*.md" -not -path "*/node_modules/*" \
+               -not -path "*/.git/*"
+        cat README.md
+        find docs -maxdepth 2 -name "*.md" 2>/dev/null | xargs cat 2>/dev/null || true
+
+      Output all results verbatim, labeled by command.
+      Skip any file that does not exist without erroring.
+    tools: [shell]
+    tool_rounds_max: 8
+    gate: auto
+    context_budget: 6000
+    model: "deepseek-v3"
+
+  # ─── Wave 1: analyze (three knowledge planes, parallel) ───────────────────
+
+  analyze_code_structure:
+    prompt: |
+      You are analyzing the CODE STRUCTURE knowledge plane for the Dream
+      memory consolidation.
+
+      Using the git history and project docs injected as context, extract:
+        1. Active modules, packages, and their responsibilities
+        2. Key data flows and entry points identified from commit messages
+        3. Recent structural changes: renames, additions, deletions
+        4. Patterns or architectural conventions visible from the git log
+
+      Format your output as a concise structured list of facts.
+      Tag each fact:
+        [HIGH] — confirmed across multiple sources
+        [LOW]  — inferred from a single source or weakly implied
+      Omit speculation. Target ≤ 400 words.
+    depends_on: [scan_git_history, scan_project_docs]
+    gate: auto
+    context_budget: 8000
+    model: "claude-3-5-sonnet-20241022"
+
+  analyze_product_intent:
+    prompt: |
+      You are analyzing the PRODUCT INTENT knowledge plane for the Dream
+      memory consolidation.
+
+      Using the existing memory store and project docs injected as context, extract:
+        1. What the project is (one sentence)
+        2. Who it is for and the core use case
+        3. Non-negotiable constraints or design principles
+        4. Explicit goals mentioned in README or memory files
+        5. Known limitations or anti-goals explicitly stated
+
+      Format your output as a concise structured list of facts.
+      Tag each fact [HIGH] or [LOW] (see scoring in analyze_code_structure).
+      Target ≤ 400 words.
+    depends_on: [scan_memory, scan_project_docs]
+    gate: auto
+    context_budget: 8000
+    model: "claude-3-5-sonnet-20241022"
+
+  analyze_conventions:
+    prompt: |
+      You are analyzing the OPERATIONAL CONVENTIONS knowledge plane for the
+      Dream memory consolidation.
+
+      Using the existing memory and git history injected as context, extract:
+        1. Coding conventions and style rules (naming, formatting, file layout)
+        2. Test patterns and expected coverage standards
+        3. Build, run, and deployment instructions that are confirmed working
+        4. Frequently used tools, scripts, and CLI commands
+        5. Explicit "never do X" or "always do Y" rules
+
+      Format your output as a concise structured list of facts.
+      Tag each fact [HIGH] or [LOW].
+      Explicitly flag any CONTRADICTIONS you detect between sources with ⚠.
+      Target ≤ 400 words.
+    depends_on: [scan_memory, scan_git_history]
+    gate: auto
+    context_budget: 8000
+    model: "claude-3-5-sonnet-20241022"
+
+  # ─── Wave 2: consolidate ──────────────────────────────────────────────────
+
+  consolidate:
+    prompt: |
+      You are the Dream consolidation engine. Synthesize the three knowledge-plane
+      analyses (code structure, product intent, conventions) from context into a
+      single clean memory document.
+
+      Consolidation rules — apply in order:
+        DEDUPLICATE  If the same fact appears in multiple planes, keep it once
+                     in the most relevant section.
+        RECONCILE    If planes contradict each other, keep the [HIGH]-confidence
+                     version. Add an inline note: ⚠ previously stated: <old>.
+        PRUNE        Drop any [LOW]-confidence fact not corroborated by another
+                     plane or the original memory.
+        SURFACE      If all three planes agree on something absent from the
+                     original memory, add it as a new insight (mark it ✨ New).
+        PRESERVE     Keep all [HIGH]-confidence facts from the original memory
+                     unless directly contradicted by current code evidence.
+
+      Emit the consolidated memory as a Markdown document with exactly these
+      top-level sections:
+
+        # Project Overview
+        # Code Structure
+        # Conventions & Tooling
+        # Active Decisions & Open Questions
+        # Changelog
+
+      The Changelog section must list what changed versus the original memory:
+      added entries, removed entries, and reconciled contradictions.
+
+      This output will be reviewed by a human before being promoted to CLAUDE.md.
+      Write it for a developer who is cold-starting on the project.
+    depends_on: [analyze_code_structure, analyze_product_intent, analyze_conventions]
+    gate: auto
+    context_budget: 12000
+    model: "claude-3-5-sonnet-20241022"
+
+  # ─── Wave 3: human review gate ────────────────────────────────────────────
+
+  human_review:
+    prompt: |
+      The Dream consolidation has produced a new memory document (in context).
+      Please review it before it is written to disk.
+
+      Check for:
+        - Incorrect or outdated facts
+        - Missing critical conventions or architectural decisions
+        - Items that should be removed or re-worded for clarity
+        - Anything marked ✨ New that is actually wrong
+
+      Approve as-is to promote, or edit inline before approving.
+      Rejecting will discard the output — no source file will be touched.
+    depends_on: [consolidate]
+    gate: human
+    context_budget: 12000
+
+  # ─── Wave 4: emit output (non-destructive) ────────────────────────────────
+
+  emit_output:
+    prompt: |
+      The human-approved consolidated memory document is in your context
+      (from the consolidate job output).
+
+      Write it to disk using the shell tool — do NOT touch CLAUDE.md or any
+      source memory file. Follow these steps exactly:
+
+        Step 1:
+          mkdir -p .dream
+
+        Step 2:
+          Write the full document to .dream/memory-output.md.
+          Use printf to avoid heredoc quoting issues:
+            printf '%s\n' "<full document>" > .dream/memory-output.md
+          If the document is long, use multiple printf calls appended with >>.
+          The file must contain the complete Markdown output from consolidate.
+
+        Step 3:
+          Verify by running: wc -l .dream/memory-output.md
+
+      End your reply with this exact summary block:
+        DREAM COMPLETE
+        Output path: .dream/memory-output.md
+        Lines written: <N>
+        To promote: cp .dream/memory-output.md CLAUDE.md
+        Original CLAUDE.md: NOT modified
+    depends_on: [human_review]
+    tools: [shell]
+    tool_rounds_max: 12
+    gate: auto
+    context_budget: 12000
+    model: "deepseek-v3"
+    on_failure: retry
+    max_retries: 2
