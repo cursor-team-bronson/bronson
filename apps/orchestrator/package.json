@@ -12,6 +12,7 @@
   "dependencies": {
     "@bronson/types": "file:../../packages/types",
     "cors": "^2.8.5",
+    "dotenv": "^17.4.2",
     "express": "^4.18.2",
     "js-yaml": "^4.1.0",
     "openai": "^4.47.1",

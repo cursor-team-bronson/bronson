@@ -8,12 +8,12 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "npm run build -w @bronson/types && turbo dev --filter=@bronson/web --filter=@bronson/orchestrator",
-    "build": "turbo build",
-    "typecheck": "turbo typecheck"
+    "dev": "npm run build -w @bronson/types && concurrently -n orch,web -c blue,green \"npm run dev -w @bronson/orchestrator\" \"npm run dev -w @bronson/web\"",
+    "build": "npm run build -w @bronson/types && npm run build -w @bronson/orchestrator && npm run build -w @bronson/web",
+    "typecheck": "npm run typecheck -w @bronson/types && npm run typecheck -w @bronson/orchestrator && npm run typecheck -w @bronson/web"
   },
   "devDependencies": {
-    "turbo": "^2.3.3",
+    "concurrently": "^9.2.1",
     "typescript": "^5.4.5"
   },
   "packageManager": "npm@10.9.2"

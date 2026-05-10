@@ -1,7 +1,24 @@
+import fs from "fs";
+import path from "path";
+import { config as loadEnv } from "dotenv";
 import express from "express";
 import cors from "cors";
 import { router } from "./api/routes.js";
 import { assertClodConfigured } from "./agent-runner/clod-client.js";
+
+(() => {
+  const candidates = [
+    path.join(process.cwd(), ".env"),
+    path.join(process.cwd(), "apps", "orchestrator", ".env"),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) {
+      loadEnv({ path: p });
+      return;
+    }
+  }
+  loadEnv();
+})();
 
 assertClodConfigured();
 
