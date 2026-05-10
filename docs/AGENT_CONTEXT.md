@@ -209,7 +209,7 @@ Currently CORS is wide open (`cors()`). Before exposing to the internet, add ori
 
 ## Environment Variables
 
-**Orchestrator** (`apps/orchestrator/.env` — see `apps/orchestrator/.env.example`):
+**Orchestrator** — see `apps/orchestrator/.env.example`. At startup, `dotenv` tries (in order): **`<cwd>/.env`**, **`<repo>/apps/orchestrator/.env`** when cwd is the repo root, and **`../../.env`** when cwd is `apps/orchestrator` (so repository root `.env` still works).
 
 ```
 PORT=3001

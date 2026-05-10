@@ -25,9 +25,9 @@ npm install
 npm run build -w @bronson/types
 ```
 
-Copy environment files:
+Environment files:
 
-1. **Orchestrator** — `cp apps/orchestrator/.env.example apps/orchestrator/.env` and set `CLOD_API_KEY` (and optional `PORT`, `CLOD_BASE_URL`).
+1. **Orchestrator** — Set `CLOD_API_KEY` in either the repo root `.env` or `apps/orchestrator/.env` (the server loads the first file that exists). You can start from `apps/orchestrator/.env.example`.
 2. **Web (optional)** — `cp apps/web/.env.example apps/web/.env` if you change defaults (`ORCHESTRATOR_URL`, `NEXT_PUBLIC_ORCHESTRATOR_URL`).
 
 ## Development

@@ -7,10 +7,14 @@ import { router } from "./api/routes.js";
 import { assertClodConfigured } from "./agent-runner/clod-client.js";
 
 (() => {
+  const cwd = process.cwd();
   const candidates = [
-    path.join(process.cwd(), ".env"),
-    path.join(process.cwd(), "apps", "orchestrator", ".env"),
+    path.join(cwd, ".env"),
+    path.join(cwd, "apps", "orchestrator", ".env"),
   ];
+  if (path.basename(cwd) === "orchestrator") {
+    candidates.push(path.join(cwd, "..", "..", ".env"));
+  }
   for (const p of candidates) {
     if (fs.existsSync(p)) {
       loadEnv({ path: p });
