@@ -13,6 +13,14 @@ import {
 
 type StepStatus = "idle" | "running" | "ok" | "error";
 
+interface BudgetAlert {
+  jobId: string;
+  spentUsd: number;
+  limitUsd: number;
+  checkoutUrl: string;
+  intentId: string;
+}
+
 function mapJobStatus(s: JobStatus): StepStatus {
   switch (s) {
     case "completed":
@@ -22,6 +30,8 @@ function mapJobStatus(s: JobStatus): StepStatus {
     case "running":
     case "gate_pending":
     case "gate_approved":
+      return "running";
+    case "awaiting_funding":
       return "running";
     case "skipped":
     case "pending":
@@ -74,6 +84,7 @@ export default function RunPage() {
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [activeRunStatus, setActiveRunStatus] = useState<RunStatus | null>(null);
   const [jobErrors, setJobErrors] = useState<Record<string, string>>({});
+  const [budgetAlert, setBudgetAlert] = useState<BudgetAlert | null>(null);
   const abortRef = useRef(false);
   const eventSourceRef = useRef<EventSource | null>(null);
 
@@ -208,7 +219,15 @@ export default function RunPage() {
       try {
         const evt = JSON.parse(ev.data) as {
           type: string;
-          payload?: { reason?: string; error?: string };
+          jobId?: string;
+          payload?: {
+            reason?: string;
+            error?: string;
+            spentUsd?: number;
+            limitUsd?: number;
+            checkoutUrl?: string;
+            intentId?: string;
+          };
         };
         if (
           evt.type === "JOB_STARTED" ||
@@ -218,12 +237,28 @@ export default function RunPage() {
           evt.type === "GATE_PENDING" ||
           evt.type === "GATE_APPROVED" ||
           evt.type === "GATE_REJECTED" ||
+          evt.type === "BUDGET_EXCEEDED" ||
+          evt.type === "BUDGET_FUNDED" ||
+          evt.type === "JOB_RESUMED" ||
           evt.type === "RUN_COMPLETED" ||
           evt.type === "RUN_FAILED"
         ) {
           void syncFromServer();
         }
+        if (evt.type === "BUDGET_EXCEEDED" && evt.payload?.checkoutUrl) {
+          setBudgetAlert({
+            jobId: evt.jobId ?? "unknown",
+            spentUsd: evt.payload.spentUsd ?? 0,
+            limitUsd: evt.payload.limitUsd ?? 0,
+            checkoutUrl: evt.payload.checkoutUrl,
+            intentId: evt.payload.intentId ?? "",
+          });
+        }
+        if (evt.type === "BUDGET_FUNDED" || evt.type === "JOB_RESUMED") {
+          setBudgetAlert(null);
+        }
         if (evt.type === "RUN_COMPLETED" || evt.type === "RUN_FAILED") {
+          setBudgetAlert(null);
           es.close();
           if (eventSourceRef.current === es) eventSourceRef.current = null;
           setIsRunning(false);
@@ -276,6 +311,59 @@ export default function RunPage() {
         <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
           <p className="font-medium">Run request failed</p>
           <p className="mt-2 font-mono text-xs">{runError}</p>
+        </div>
+      ) : null}
+
+      {budgetAlert ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="mx-4 w-full max-w-lg rounded-2xl border border-amber-500/30 bg-white shadow-2xl dark:bg-zinc-900">
+            <div className="border-b border-amber-500/20 bg-amber-50 px-6 py-4 dark:bg-amber-950/30 rounded-t-2xl">
+              <div className="flex items-center gap-3">
+                <span className="text-2xl">⚠️</span>
+                <div>
+                  <h2 className="text-lg font-semibold text-amber-900 dark:text-amber-200">Budget Exceeded</h2>
+                  <p className="text-sm text-amber-700 dark:text-amber-400">
+                    Job <code className="rounded bg-amber-200/50 px-1 font-mono text-xs dark:bg-amber-800/50">{budgetAlert.jobId}</code> needs funding to continue
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div className="space-y-4 px-6 py-5">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded-lg bg-zinc-100 p-3 dark:bg-zinc-800">
+                  <p className="text-xs text-muted-foreground">Spent</p>
+                  <p className="text-lg font-bold text-red-600">${budgetAlert.spentUsd.toFixed(4)}</p>
+                </div>
+                <div className="rounded-lg bg-zinc-100 p-3 dark:bg-zinc-800">
+                  <p className="text-xs text-muted-foreground">Budget limit</p>
+                  <p className="text-lg font-bold text-foreground">${budgetAlert.limitUsd.toFixed(4)}</p>
+                </div>
+              </div>
+              <div className="rounded-lg border border-dashed border-zinc-300 bg-zinc-50 p-4 dark:border-zinc-700 dark:bg-zinc-800/50">
+                <p className="mb-2 text-xs font-medium text-muted-foreground">AllScale Checkout</p>
+                <p className="break-all font-mono text-xs text-foreground">{budgetAlert.checkoutUrl}</p>
+              </div>
+              <div className="flex gap-3">
+                <a
+                  href={budgetAlert.checkoutUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex-1 rounded-lg bg-emerald-600 px-4 py-2.5 text-center text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700"
+                >
+                  💳 Pay with USDC to Resume
+                </a>
+                <button
+                  onClick={() => setBudgetAlert(null)}
+                  className="rounded-lg border border-zinc-300 bg-white px-4 py-2.5 text-sm font-medium text-zinc-700 transition hover:bg-zinc-50 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
+                >
+                  Dismiss
+                </button>
+              </div>
+              <p className="text-center text-xs text-muted-foreground">
+                Once paid, AllScale webhook confirms the on-chain transaction and the job resumes automatically.
+              </p>
+            </div>
+          </div>
         </div>
       ) : null}
 
@@ -377,6 +465,11 @@ export default function RunPage() {
                   depends on:{" "}
                   <span className="font-mono text-foreground">{deps.length ? deps.join(", ") : "—"}</span>
                 </p>
+                {budgetAlert?.jobId === stepId ? (
+                  <div className="rounded-lg border border-amber-400/40 bg-amber-50 p-3 dark:bg-amber-950/30">
+                    <p className="text-xs font-medium text-amber-700 dark:text-amber-300">⚠️ Awaiting funding — ${budgetAlert.spentUsd.toFixed(4)} / ${budgetAlert.limitUsd.toFixed(4)} budget</p>
+                  </div>
+                ) : null}
                 {jobErrors[stepId] ? (
                   <div className="rounded-lg border border-destructive/35 bg-destructive/5 p-3">
                     <p className="text-xs font-medium text-destructive">Error</p>
