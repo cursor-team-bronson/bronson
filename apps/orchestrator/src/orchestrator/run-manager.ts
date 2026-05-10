@@ -620,6 +620,7 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
       }
 
       if (err instanceof BudgetExceededError) {
+        if (killed.has(run.runId)) return;
         jobState.status = "awaiting_funding";
         jobState.checkoutUrl = err.checkoutUrl;
         run.status = "awaiting_funding";
