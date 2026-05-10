@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown } from "lucide-react";
+import { CalendarClock, ChevronDown } from "lucide-react";
 import type { JobState, JobStatus, RunState, RunStatus } from "@bronson/types";
 
 function jobStepNeedsWork(status: JobStatus | undefined): boolean {
@@ -9,9 +9,18 @@ function jobStepNeedsWork(status: JobStatus | undefined): boolean {
   return status !== "completed" && status !== "skipped";
 }
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
+  BRONSON_WORKFLOW_SCHEDULE_KEY,
+  dreamStateWorkflowYaml,
   essayWorkflowYaml,
   LAST_MODEL_RUN_ID_STORAGE_KEY,
   parseDag,
@@ -20,8 +29,44 @@ import {
   toOrchestratorWorkflowYaml,
   WORKFLOW_YAML_STORAGE_KEY,
 } from "@/lib/workflow-yaml";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 type StepStatus = "idle" | "running" | "ok" | "error";
+
+/** Matches cron-style runners; manual = interactive Run only. */
+type ScheduleCadence = "manual" | "hourly" | "daily" | "weekly";
+
+function parseLocalTime(t: string): { hour: number; minute: number } {
+  const [h, m] = t.split(":").map((x) => Number.parseInt(x, 10));
+  const hour = Number.isFinite(h) ? Math.min(23, Math.max(0, h)) : 9;
+  const minute = Number.isFinite(m) ? Math.min(59, Math.max(0, m)) : 0;
+  return { hour, minute };
+}
+
+/** Cron expression for external runners (local wall-clock). Weekly = Sunday. */
+function cronExpressionForSchedule(cadence: ScheduleCadence, timeLocal: string): string {
+  const { hour, minute } = parseLocalTime(timeLocal);
+  switch (cadence) {
+    case "manual":
+      return "—";
+    case "hourly":
+      return `${minute} * * * *`;
+    case "daily":
+      return `${minute} ${hour} * * *`;
+    case "weekly":
+      return `${minute} ${hour} * * 0`;
+    default:
+      return "—";
+  }
+}
 
 function mapJobStatus(s: JobStatus): StepStatus {
   switch (s) {
@@ -32,6 +77,7 @@ function mapJobStatus(s: JobStatus): StepStatus {
     case "running":
     case "gate_pending":
     case "gate_approved":
+    case "awaiting_funding":
       return "running";
     case "skipped":
     case "pending":
@@ -283,6 +329,39 @@ export default function RunPage() {
   const eventSourceRef = useRef<EventSource | null>(null);
   /** Skip clearing job details on the first `yamlText` effect so we can merge a persisted last run. */
   const skipYamlResetOnceRef = useRef(true);
+  /** Fallback while SSE can drop (proxy timeouts); cleared when run reaches a terminal state or Stop. */
+  /** Browser timer id (`window.setInterval`); typed as number to avoid Node DOM global conflicts in tsc. */
+  const pollRef = useRef<number | null>(null);
+
+  /** Preferred cadence for external schedulers; persisted under BRONSON_WORKFLOW_SCHEDULE_KEY. */
+  const [scheduleCadence, setScheduleCadence] = useState<ScheduleCadence>("manual");
+  /** Local time (HH:MM) for daily/weekly; hourly uses the minute field only. */
+  const [scheduleTime, setScheduleTime] = useState("09:00");
+  const [scheduleSavedAt, setScheduleSavedAt] = useState<string | null>(null);
+
+  const scheduleHint = useMemo(() => {
+    switch (scheduleCadence) {
+      case "manual":
+        return null;
+      case "hourly":
+        return "At :MM every hour (minute from the clock below).";
+      case "daily":
+        return "Every day at this local time.";
+      case "weekly":
+        return "Every Sunday at this local time.";
+      default:
+        return null;
+    }
+  }, [scheduleCadence]);
+
+  const clearPoll = useCallback(() => {
+    if (pollRef.current != null) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => () => clearPoll(), [clearPoll]);
 
   const loadFromStorage = useCallback(() => {
     try {
@@ -302,6 +381,56 @@ export default function RunPage() {
       /* ignore */
     }
   }, []);
+
+  const loadDreamPreset = useCallback(() => {
+    setYamlText(dreamStateWorkflowYaml);
+    setRunError(null);
+    try {
+      localStorage.setItem(WORKFLOW_YAML_STORAGE_KEY, dreamStateWorkflowYaml);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    loadFromStorage();
+  }, [loadFromStorage]);
+
+  useEffect(() => {
+    try {
+      let raw = localStorage.getItem(BRONSON_WORKFLOW_SCHEDULE_KEY);
+      if (!raw) raw = localStorage.getItem("bronson.scheduleDemo.v1");
+      if (!raw) return;
+      const o = JSON.parse(raw) as { cadence?: string; savedAt?: string; timeLocal?: string };
+      const c = o.cadence;
+      if (c === "hourly" || c === "daily" || c === "weekly") setScheduleCadence(c);
+      else if (c === "off" || c === "manual") setScheduleCadence("manual");
+      if (typeof o.savedAt === "string") setScheduleSavedAt(o.savedAt);
+      if (typeof o.timeLocal === "string" && /^\d{1,2}:\d{2}$/.test(o.timeLocal)) setScheduleTime(o.timeLocal);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const persistSchedule = useCallback(() => {
+    try {
+      if (scheduleCadence === "manual") {
+        localStorage.removeItem(BRONSON_WORKFLOW_SCHEDULE_KEY);
+        setScheduleSavedAt(null);
+        return;
+      }
+      const payload = {
+        cadence: scheduleCadence,
+        timeLocal: scheduleTime,
+        savedAt: new Date().toISOString(),
+        preview: yamlText.slice(0, 200),
+      };
+      localStorage.setItem(BRONSON_WORKFLOW_SCHEDULE_KEY, JSON.stringify(payload));
+      setScheduleSavedAt(payload.savedAt);
+    } catch {
+      /* ignore */
+    }
+  }, [scheduleCadence, scheduleTime, yamlText]);
 
   useEffect(() => {
     const onVis = () => {
@@ -352,10 +481,10 @@ export default function RunPage() {
     return () => window.clearInterval(id);
   }, [isRunning]);
 
-  const fetchAndApplyRunState = useCallback(async (rid: string): Promise<boolean> => {
+  const fetchAndApplyRunState = useCallback(async (rid: string): Promise<RunState | null> => {
     try {
       const res = await fetch(`/api/runs/${rid}`);
-      if (!res.ok) return false;
+      if (!res.ok) return null;
       const runState = (await res.json()) as RunState;
       setActiveRunId(rid);
       setActiveRunStatus(runState.status);
@@ -375,9 +504,9 @@ export default function RunPage() {
         eventSourceRef.current?.close();
         eventSourceRef.current = null;
       }
-      return true;
+      return runState;
     } catch {
-      return false;
+      return null;
     }
   }, []);
 
@@ -392,9 +521,9 @@ export default function RunPage() {
     }
     if (!rid) return;
     void (async () => {
-      const ok = await fetchAndApplyRunState(rid);
+      const runState = await fetchAndApplyRunState(rid);
       if (cancelled) return;
-      if (!ok) {
+      if (!runState) {
         try {
           localStorage.removeItem(LAST_MODEL_RUN_ID_STORAGE_KEY);
         } catch {
@@ -422,16 +551,20 @@ export default function RunPage() {
 
   const stop = useCallback(() => {
     abortRef.current = true;
+    clearPoll();
     eventSourceRef.current?.close();
     eventSourceRef.current = null;
     setIsRunning(false);
-  }, []);
+  }, [clearPoll]);
 
   const beginWatchingRun = useCallback(
     (runId: string) => {
       const syncFromServer = async () => {
         if (abortRef.current) return;
-        await fetchAndApplyRunState(runId);
+        const runState = await fetchAndApplyRunState(runId);
+        if (runState?.status === "completed" || runState?.status === "failed") {
+          clearPoll();
+        }
       };
 
       void syncFromServer();
@@ -439,6 +572,9 @@ export default function RunPage() {
         setIsRunning(false);
         return;
       }
+
+      clearPoll();
+      pollRef.current = window.setInterval(() => void syncFromServer(), 4000) as number;
 
       eventSourceRef.current?.close();
       const es = new EventSource(`/api/runs/${runId}/events`);
@@ -466,6 +602,7 @@ export default function RunPage() {
             void syncFromServer();
           }
           if (evt.type === "RUN_COMPLETED" || evt.type === "RUN_FAILED") {
+            clearPoll();
             es.close();
             if (eventSourceRef.current === es) eventSourceRef.current = null;
             setIsRunning(false);
@@ -479,10 +616,9 @@ export default function RunPage() {
         es.close();
         if (eventSourceRef.current === es) eventSourceRef.current = null;
         if (!abortRef.current) void syncFromServer();
-        setIsRunning(false);
       };
     },
-    [fetchAndApplyRunState],
+    [clearPoll, fetchAndApplyRunState],
   );
 
   const resumeFromFirstIncomplete = useCallback(async () => {
@@ -661,24 +797,118 @@ export default function RunPage() {
           <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground">
             Posts this workflow to the Bronson orchestrator (<code className="rounded bg-muted px-1 py-0.5 text-xs">POST /api/runs</code>
             ), which runs jobs through CLōD in DAG waves. Use <strong className="font-medium text-foreground">Load essay test</strong> for the 3-cycle writer/reviewer
-            flow (requires <code className="text-xs">ALLOW_SHELL_TOOL=true</code> and <code className="text-xs">TOOL_SHELL_CWD</code> in the orchestrator — see example
-            header in <code className="text-xs">examples/essay-write-review-3cycles.yaml</code>). Or use <strong className="font-medium text-foreground">jobs:</strong> /{" "}
-            <strong className="font-medium text-foreground">steps:</strong> from the DAG editor. Orchestrator on port 3001; set <code className="text-xs">ORCHESTRATOR_URL</code> for the web app if needed.
+            flow (requires <code className="text-xs">TOOL_SHELL_CWD</code> and either <code className="text-xs">ALLOW_SHELL_TOOL=true</code> or{" "}
+            <code className="text-xs">ALLOW_WORKSPACE_WRITE=true</code> — see <code className="text-xs">examples/essay-write-review-3cycles.yaml</code>). Or use{" "}
+            <strong className="font-medium text-foreground">jobs:</strong> / <strong className="font-medium text-foreground">steps:</strong> from the DAG editor.
+            Orchestrator on port 3001; set <code className="text-xs">ORCHESTRATOR_URL</code> for the web app if needed.
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button type="button" variant="secondary" size="sm" onClick={loadEssayPreset} disabled={isRunning}>
-            Load essay test (3 cycles)
-          </Button>
-          <Button type="button" variant="outline" size="sm" onClick={loadFromStorage} disabled={isRunning}>
-            Reload from editor
-          </Button>
-          <Button type="button" variant="destructive" size="sm" onClick={stop} disabled={!isRunning}>
-            Stop listening
-          </Button>
-          <Button type="button" onClick={() => void run()} disabled={isRunning || (!runnable && !mayContinuePersistedRun)}>
-            Run
-          </Button>
+        <div className="flex min-w-0 flex-1 flex-col items-stretch gap-4 sm:max-w-xl sm:items-end">
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <Button type="button" variant="secondary" size="sm" onClick={loadEssayPreset} disabled={isRunning}>
+              Load essay test (3 cycles)
+            </Button>
+            <Button type="button" variant="secondary" size="sm" onClick={loadDreamPreset} disabled={isRunning}>
+              Load dream-state
+            </Button>
+            <Button type="button" variant="outline" size="sm" onClick={loadFromStorage} disabled={isRunning}>
+              Reload from editor
+            </Button>
+            <Button type="button" variant="destructive" size="sm" onClick={stop} disabled={!isRunning}>
+              Stop listening
+            </Button>
+            <Button type="button" onClick={() => void run()} disabled={isRunning || (!runnable && !mayContinuePersistedRun)}>
+              Run
+            </Button>
+          </div>
+          <Card size="sm" className="w-full max-w-sm border-border bg-muted/15 shadow-sm">
+            <CardHeader className="gap-1 pb-2">
+              <CardTitle className="flex items-center gap-2 text-sm font-semibold">
+                <CalendarClock className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                Schedule
+              </CardTitle>
+              <CardDescription className="text-[11px] leading-snug">
+                Stored locally as <code className="rounded bg-muted px-1 font-mono">{BRONSON_WORKFLOW_SCHEDULE_KEY}</code>. Point cron / CI at{" "}
+                <code className="rounded bg-muted px-1 text-[11px]">POST /api/runs</code>.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-3 pt-0">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="workflow-schedule" className="text-xs">
+                    Cadence
+                  </Label>
+                  <Select
+                    value={scheduleCadence}
+                    onValueChange={(v) => setScheduleCadence(v as ScheduleCadence)}
+                    disabled={isRunning}
+                  >
+                    <SelectTrigger id="workflow-schedule" size="sm" className="w-full">
+                      <SelectValue placeholder="Cadence" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="manual">Manual</SelectItem>
+                      <SelectItem value="hourly">Hourly</SelectItem>
+                      <SelectItem value="daily">Daily</SelectItem>
+                      <SelectItem value="weekly">Weekly (Sun)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="workflow-schedule-time" className="text-xs">
+                    Time
+                  </Label>
+                  <Input
+                    id="workflow-schedule-time"
+                    type="time"
+                    value={scheduleTime}
+                    onChange={(e) => setScheduleTime(e.target.value)}
+                    disabled={isRunning || scheduleCadence === "manual"}
+                    className="h-8 text-xs"
+                  />
+                </div>
+              </div>
+              {scheduleCadence !== "manual" && scheduleHint ? (
+                <p className="text-[11px] text-muted-foreground">{scheduleHint}</p>
+              ) : null}
+              {scheduleCadence !== "manual" ? (
+                <p className="font-mono text-[11px] text-muted-foreground">
+                  cron <span className="text-foreground">{cronExpressionForSchedule(scheduleCadence, scheduleTime)}</span>
+                </p>
+              ) : null}
+            </CardContent>
+            <CardFooter className="flex flex-wrap items-center gap-2 border-t border-border/60 pt-3">
+              <Button type="button" size="sm" onClick={persistSchedule} disabled={isRunning}>
+                Save schedule
+              </Button>
+              {scheduleCadence !== "manual" ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setScheduleCadence("manual");
+                    setScheduleTime("09:00");
+                    try {
+                      localStorage.removeItem(BRONSON_WORKFLOW_SCHEDULE_KEY);
+                      setScheduleSavedAt(null);
+                    } catch {
+                      /* ignore */
+                    }
+                  }}
+                  disabled={isRunning}
+                >
+                  Clear
+                </Button>
+              ) : null}
+              {scheduleCadence !== "manual" && scheduleSavedAt ? (
+                <p className="w-full text-[11px] text-muted-foreground">
+                  <span className="font-mono font-medium text-foreground">{scheduleCadence}</span> ·{" "}
+                  <span className="font-mono">{scheduleTime}</span> · saved <span className="font-mono">{scheduleSavedAt}</span>
+                </p>
+              ) : null}
+            </CardFooter>
+          </Card>
         </div>
       </header>
 
@@ -747,12 +977,26 @@ export default function RunPage() {
                 <code className="rounded bg-muted px-1">apps/orchestrator/.env</code>.
               </li>
               <li>
-                Essay / shell allowlist: if commands are blocked, relax{" "}
-                <code className="rounded bg-muted px-1">TOOL_SHELL_ALLOWLIST_REGEX</code> (dev only).
+                Essay preset: set <code className="rounded bg-muted px-1">TOOL_SHELL_CWD</code> and{" "}
+                <code className="rounded bg-muted px-1">ALLOW_SHELL_TOOL=true</code> (or{" "}
+                <code className="rounded bg-muted px-1">ALLOW_WORKSPACE_WRITE=true</code> without shell). Writers use{" "}
+                <code className="rounded bg-muted px-1">workspace_write</code> — no shell quoting. For raw shell jobs, relax{" "}
+                <code className="rounded bg-muted px-1">TOOL_SHELL_ALLOWLIST_REGEX</code> if commands are blocked.
               </li>
               <li>
                 Orchestrator URL: default web proxy is port 3001; if the orchestrator bound another port, set web{" "}
                 <code className="rounded bg-muted px-1">ORCHESTRATOR_URL</code> (see orchestrator startup log).
+              </li>
+              <li>
+                Live UI updates use SSE plus a 4s poll until the run finishes — refresh if something looks stuck with long shell/tool loops (
+                <code className="rounded bg-muted px-1">tool_rounds_max</code>).
+              </li>
+              <li>
+                Dream-state: scans may need higher <code className="rounded bg-muted px-1">tool_rounds_max</code> on Windows;{" "}
+                <code className="rounded bg-muted px-1">emit_artifacts</code> uses shell + Node stdin only (no{" "}
+                <code className="rounded bg-muted px-1">workspace_write</code>). If{" "}
+                <code className="rounded bg-muted px-1">ALLOW_WORKSPACE_WRITE=false</code>, other presets may still need{" "}
+                <code className="rounded bg-muted px-1">true</code>.
               </li>
             </ul>
           </div>

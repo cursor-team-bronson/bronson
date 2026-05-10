@@ -10,7 +10,12 @@ export const JobConfigSchema = z.object({
   tools: z.array(z.string()).optional().default([]),
   /** Max assistant rounds when tools are enabled (each round may include multiple tool calls). */
   tool_rounds_max: z.number().int().min(1).max(64).default(12),
+  /**
+   * If `halt`, a failed job stops the run. If `retry`, dependent jobs still run and receive failure context;
+   * it does **not** by itself re-invoke the failed job — use `max_retries` for extra attempts on the same job.
+   */
   on_failure: z.enum(["halt", "retry"]).default("halt"),
+  /** Extra attempts after the first failure for this job only (default 0 = one attempt). */
   max_retries: z.number().int().min(0).max(5).default(0),
   budget_usd: z.number().positive().optional(),
 });
@@ -77,10 +82,16 @@ export interface GateRequest {
 export interface GateDecision {
   approved: boolean; editedOutput?: string; reason?: string;
 }
+export type UpstreamKind = "completed" | "failed";
+
 export interface AgentRunOptions {
   jobId: string;
   jobConfig: JobConfig;
   contextInput: string;
+  /** Populated on retries: errors from earlier attempts of this same job (passed into the model prompt). */
+  priorAttemptErrors?: string[];
+  /** Per dependency: successful output vs failure transcript from event log. */
+  upstreamKind?: Record<string, UpstreamKind>;
   /** When aborted, in-flight chat.completions calls are cancelled (OpenAI SDK). */
   abortSignal?: AbortSignal;
 }

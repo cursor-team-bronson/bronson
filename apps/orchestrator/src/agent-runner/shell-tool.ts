@@ -47,11 +47,16 @@ function drainLimited(stream: Readable, maxBytes: number): Promise<{ text: strin
   });
 }
 
+export type ShellRunOptions = {
+  /** UTF-8 text written to the child stdin (e.g. script piped to `powershell -NoProfile -Command -`). */
+  stdin?: string;
+};
+
 /**
  * Runs `command` via the system shell (`spawn(..., { shell: true })`).
  * POC-only: requires ALLOW_SHELL_TOOL=true and respects env limits / optional allowlist.
  */
-export async function executeShellCommand(command: string): Promise<string> {
+export async function executeShellCommand(command: string, options?: ShellRunOptions): Promise<string> {
   if (!isShellToolEnabled()) {
     throw new Error("Shell tool is disabled (set ALLOW_SHELL_TOOL=true on the orchestrator)");
   }
@@ -74,6 +79,8 @@ export async function executeShellCommand(command: string): Promise<string> {
   const cwd = process.env.TOOL_SHELL_CWD?.trim() || process.cwd();
   const timeoutMs = parsePositiveInt(process.env.TOOL_SHELL_TIMEOUT_MS, 60_000);
   const maxBytes = parsePositiveInt(process.env.TOOL_SHELL_MAX_OUTPUT_BYTES, 131_072);
+  const stdinText = options?.stdin;
+  const useStdin = typeof stdinText === "string";
 
   return new Promise((resolve, reject) => {
     const child = spawn(trimmed, {
@@ -81,7 +88,13 @@ export async function executeShellCommand(command: string): Promise<string> {
       cwd,
       env: shellChildEnv(),
       windowsHide: true,
+      stdio: [useStdin ? "pipe" : "ignore", "pipe", "pipe"],
     });
+
+    if (useStdin && child.stdin) {
+      child.stdin.write(stdinText, "utf8");
+      child.stdin.end();
+    }
 
     let settled = false;
     const timer = setTimeout(() => {
@@ -127,7 +140,13 @@ export async function executeShellCommand(command: string): Promise<string> {
             "--- stderr ---",
             err.text + (err.truncated ? "\n[stderr truncated]" : ""),
           ].filter(Boolean);
-          resolve(parts.join("\n"));
+          let body = parts.join("\n");
+          if (code !== 0 && code != null) {
+            body =
+              `[shell] Non-zero exit (${code}). Adjust stdin/command or read stderr below.\n\n` +
+              body;
+          }
+          resolve(body);
         })
         .catch(reject);
     });

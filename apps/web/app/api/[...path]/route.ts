@@ -1,10 +1,29 @@
 import type { NextRequest } from "next/server";
+import { Agent } from "undici";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+/** Undici defaults ~300s body read — long essay runs kill SSE; disable timeouts for run event streams. */
+const sseUpstreamAgent = new Agent({
+  headersTimeout: 0,
+  bodyTimeout: 0,
+  keepAliveTimeout: 600_000,
+  keepAliveMaxTimeout: 600_000,
+});
+
 function orchestratorBase(): string {
   return (process.env.ORCHESTRATOR_URL ?? "http://127.0.0.1:3001").replace(/\/$/, "");
+}
+
+/** Only the orchestrator run event stream — avoid disabling timeouts for unrelated .../events routes. */
+function isRunEventsSse(req: NextRequest, pathSegments: string[]): boolean {
+  return (
+    req.method === "GET" &&
+    pathSegments.length === 3 &&
+    pathSegments[0] === "runs" &&
+    pathSegments[2] === "events"
+  );
 }
 
 async function proxy(req: NextRequest, pathSegments: string[]): Promise<Response> {
@@ -21,9 +40,15 @@ async function proxy(req: NextRequest, pathSegments: string[]): Promise<Response
     body = await req.arrayBuffer();
   }
 
+  const sse = isRunEventsSse(req, pathSegments);
   let upstream: Response;
   try {
-    upstream = await fetch(target, { method: req.method, headers, body });
+    upstream = await fetch(target, {
+      method: req.method,
+      headers,
+      body,
+      ...(sse ? { dispatcher: sseUpstreamAgent } : {}),
+    });
   } catch (err) {
     const detail =
       err instanceof Error
@@ -38,7 +63,6 @@ async function proxy(req: NextRequest, pathSegments: string[]): Promise<Response
       { status: 502 },
     );
   }
-
   return new Response(upstream.body, {
     status: upstream.status,
     statusText: upstream.statusText,

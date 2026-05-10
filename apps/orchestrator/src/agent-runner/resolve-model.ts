@@ -14,6 +14,6 @@ export function resolveAgentModel(jobConfig: JobConfig): string {
     process.env.CLOD_DEFAULT_MODEL?.trim();
   if (fromEnv) return fromEnv;
   throw new Error(
-    'Set `model` on the job in YAML, or set DEFAULT_AGENT_MODEL (or CLOD_DEFAULT_MODEL) on the orchestrator.',
+    'Set `model` on the job in YAML (exact CLōD catalog id, e.g. "DeepSeek V3.2"), or set DEFAULT_AGENT_MODEL or CLOD_DEFAULT_MODEL on the orchestrator.',
   );
 }
