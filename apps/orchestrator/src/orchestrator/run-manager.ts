@@ -69,6 +69,7 @@ export async function startRun(config: WorkflowConfig): Promise<RunState> {
   eventLog.append(runId, "RUN_STARTED", undefined, { workflowName: config.name });
 
   executeRun(run, config, dag.executionWaves).catch(err => {
+    if (killed.has(runId)) return;
     run.status = "failed";
     eventLog.append(runId, "RUN_FAILED", undefined, { error: String(err) });
   });
@@ -117,9 +118,10 @@ export function stopRun(runId: string) {
   gateManager.cancelAll(runId, "Run killed by user");
 
   for (const [jobId, jobState] of Object.entries(run.jobs)) {
-    if (jobState.status === "running" || jobState.status === "gate_pending") {
+    if (jobState.status === "running" || jobState.status === "gate_pending" || jobState.status === "gate_approved" || jobState.status === "awaiting_funding") {
       jobState.status = "failed";
       jobState.error = "Run killed by user";
+      jobState.checkoutUrl = undefined;
     }
     if (jobState.status === "pending") {
       jobState.status = "skipped";
