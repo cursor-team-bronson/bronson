@@ -1,11 +1,21 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { JobStatus, RunState, RunStatus } from "@bronson/types";
+import { ChevronDown } from "lucide-react";
+import type { JobState, JobStatus, RunState, RunStatus } from "@bronson/types";
+
+function jobStepNeedsWork(status: JobStatus | undefined): boolean {
+  if (status == null) return true;
+  return status !== "completed" && status !== "skipped";
+}
 import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   essayWorkflowYaml,
+  LAST_MODEL_RUN_ID_STORAGE_KEY,
   parseDag,
+  readStoredWorkflowYaml,
   starterYaml,
   toOrchestratorWorkflowYaml,
   WORKFLOW_YAML_STORAGE_KEY,
@@ -75,8 +85,198 @@ function jobErrorsFromRun(run: RunState): Record<string, string> {
   return out;
 }
 
+function parseIsoMs(iso: string | undefined): number | undefined {
+  if (!iso) return undefined;
+  const t = Date.parse(iso);
+  return Number.isFinite(t) ? t : undefined;
+}
+
+/** Wall time for the job attempt: completed vs in-flight vs unknown. */
+function durationForJob(job: JobState | undefined, nowMs: number): number | undefined {
+  if (!job?.startedAt) return undefined;
+  const start = parseIsoMs(job.startedAt);
+  if (start == null) return undefined;
+  const inFlight =
+    job.status === "running" ||
+    job.status === "gate_pending" ||
+    job.status === "gate_approved";
+  const endMs = job.completedAt != null ? parseIsoMs(job.completedAt) : inFlight ? nowMs : undefined;
+  if (endMs == null) return undefined;
+  const ms = endMs - start;
+  return ms >= 0 ? ms : undefined;
+}
+
+function formatDurationMs(ms: number | undefined): string {
+  if (ms == null) return "—";
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)} s`;
+  const m = Math.floor(ms / 60_000);
+  const s = Math.round((ms % 60_000) / 1000);
+  return `${m}m ${s}s`;
+}
+
+type ModelRunnerStepCardProps = {
+  stepId: string;
+  deps: string[];
+  stepType: string | undefined;
+  status: StepStatus;
+  job: JobState | undefined;
+  jobError: string | undefined;
+  nowMs: number;
+  activeRunId: string | null;
+  onStopStep: (stepId: string) => void;
+  /** First incomplete step in server DAG order — continue run or retry failed step. */
+  resumeCta?: { label: string; disabled: boolean; onClick: () => void } | null;
+};
+
+function ModelRunnerStepCard({
+  stepId,
+  deps,
+  stepType,
+  status,
+  job,
+  jobError,
+  nowMs,
+  activeRunId,
+  onStopStep,
+  resumeCta,
+}: ModelRunnerStepCardProps) {
+  const tokens = job?.tokensUsed;
+  const durationMs = durationForJob(job, nowMs);
+  const tokenLabel = typeof tokens === "number" ? tokens.toLocaleString() : "—";
+  const timeLabel = formatDurationMs(durationMs);
+  const cost = job?.costUsd;
+  const showStop =
+    Boolean(activeRunId) &&
+    (job?.status === "running" || (status === "running" && job === undefined));
+
+  return (
+    <li>
+      <Card className="gap-0 py-0">
+        <Collapsible defaultOpen={Boolean(jobError)} className="group">
+          <div className="flex items-stretch gap-2 border-b border-border/60">
+            <CollapsibleTrigger asChild>
+              <button
+                type="button"
+                className="hover:bg-muted/30 flex min-w-0 flex-1 flex-col gap-3 px-4 py-4 text-left transition-colors sm:flex-row sm:items-center sm:justify-between sm:gap-4"
+              >
+                <div className="min-w-0 flex-1 space-y-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="font-mono text-sm font-semibold text-foreground">{stepId}</p>
+                    <StatusLight status={status} />
+                  </div>
+                  {stepType ? (
+                    <p className="text-xs text-muted-foreground">
+                      type: <span className="font-mono text-foreground">{stepType}</span>
+                    </p>
+                  ) : null}
+                  <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs tabular-nums text-muted-foreground">
+                    <span>
+                      <span className="font-medium text-foreground/80">Tokens</span>{" "}
+                      <span className="font-mono text-foreground">{tokenLabel}</span>
+                    </span>
+                    <span>
+                      <span className="font-medium text-foreground/80">Time</span>{" "}
+                      <span className="font-mono text-foreground">{timeLabel}</span>
+                    </span>
+                  </div>
+                </div>
+                <ChevronDown className="text-muted-foreground size-4 shrink-0 self-end transition-transform duration-200 group-data-[state=open]:rotate-180 sm:self-center" />
+              </button>
+            </CollapsibleTrigger>
+            {resumeCta || showStop ? (
+              <div className="flex shrink-0 flex-col justify-center gap-2 pr-3">
+                {resumeCta ? (
+                  <Button
+                    type="button"
+                    variant="default"
+                    size="sm"
+                    className="h-8 whitespace-nowrap"
+                    disabled={resumeCta.disabled}
+                    title="Continue this run from the first incomplete step (uses saved workflow + job outputs from the orchestrator database)"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      resumeCta.onClick();
+                    }}
+                  >
+                    {resumeCta.label}
+                  </Button>
+                ) : null}
+                {showStop ? (
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    size="sm"
+                    className="h-8 whitespace-nowrap"
+                    title="Stop the in-flight model request for this step (cancels the current CLōD HTTP call)"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onStopStep(stepId);
+                    }}
+                  >
+                    Stop
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+          <CollapsibleContent>
+            <CardContent className="border-border space-y-4 border-t pt-4 pb-4">
+              <p className="text-xs text-muted-foreground">
+                depends on:{" "}
+                <span className="font-mono text-foreground">{deps.length ? deps.join(", ") : "—"}</span>
+              </p>
+              {typeof cost === "number" ? (
+                <p className="text-xs text-muted-foreground">
+                  Est. cost:{" "}
+                  <span className="font-mono text-foreground">
+                    {cost < 0.0001 ? cost.toExponential(2) : `$${cost.toFixed(4)}`}
+                  </span>
+                </p>
+              ) : null}
+              {(job?.startedAt || job?.completedAt) && (
+                <p className="text-[11px] leading-relaxed text-muted-foreground">
+                  {job.startedAt ? (
+                    <>
+                      started <span className="font-mono text-foreground/90">{job.startedAt}</span>
+                    </>
+                  ) : null}
+                  {job.startedAt && job.completedAt ? " · " : null}
+                  {job.completedAt ? (
+                    <>
+                      completed <span className="font-mono text-foreground/90">{job.completedAt}</span>
+                    </>
+                  ) : null}
+                </p>
+              )}
+              {job?.output?.trim() ? (
+                <div className="space-y-1">
+                  <p className="text-xs font-medium text-foreground">Output</p>
+                  <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted/50 p-3 font-mono text-[11px] leading-relaxed text-foreground ring-1 ring-border">
+                    {job.output.trim()}
+                  </pre>
+                </div>
+              ) : null}
+              {jobError ? (
+                <div className="rounded-lg border border-destructive/35 bg-destructive/5 p-3">
+                  <p className="text-xs font-medium text-destructive">Error</p>
+                  <pre className="mt-1 max-h-36 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-destructive">
+                    {jobError}
+                  </pre>
+                </div>
+              ) : null}
+            </CardContent>
+          </CollapsibleContent>
+        </Collapsible>
+      </Card>
+    </li>
+  );
+}
+
 export default function RunPage() {
-  const [yamlText, setYamlText] = useState(starterYaml);
+  const [yamlText, setYamlText] = useState(() => readStoredWorkflowYaml());
   const [statusByStep, setStatusByStep] = useState<Record<string, StepStatus>>({});
   const [isRunning, setIsRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
@@ -84,10 +284,16 @@ export default function RunPage() {
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [activeRunStatus, setActiveRunStatus] = useState<RunStatus | null>(null);
   const [jobErrors, setJobErrors] = useState<Record<string, string>>({});
-  const [jobDetails, setJobDetails] = useState<Record<string, { costUsd?: number; tokensUsed?: number; budgetUsd?: number; status: string }>>({});
+  /** Latest job payloads from GET /api/runs/:id (tokens, timing, output). */
+  const [jobDetails, setJobDetails] = useState<Record<string, JobState>>({});
   const [budgetAlert, setBudgetAlert] = useState<BudgetAlert | null>(null);
+  /** DAG wave order from last GET /api/runs/:id (matches persisted run; editor order can differ after refresh). */
+  const [serverStepOrder, setServerStepOrder] = useState<string[] | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const abortRef = useRef(false);
   const eventSourceRef = useRef<EventSource | null>(null);
+  /** Skip clearing job details on the first `yamlText` effect so we can merge a persisted last run. */
+  const skipYamlResetOnceRef = useRef(true);
 
   const loadFromStorage = useCallback(() => {
     try {
@@ -109,10 +315,6 @@ export default function RunPage() {
   }, []);
 
   useEffect(() => {
-    loadFromStorage();
-  }, [loadFromStorage]);
-
-  useEffect(() => {
     const onVis = () => {
       if (document.visibilityState === "visible") loadFromStorage();
     };
@@ -124,12 +326,110 @@ export default function RunPage() {
   const hasCycle = Boolean(graph.cyclePath);
   const runnable = !graph.parseError && !hasCycle && graph.nodes.length > 0;
   const order = graph.topoOrder.length > 0 ? graph.topoOrder : graph.nodes;
+  const stepOrderForResume = serverStepOrder && serverStepOrder.length > 0 ? serverStepOrder : order;
+
+  const firstIncompleteStepId = useMemo(() => {
+    if (!activeRunId || activeRunStatus === "completed") return null;
+    for (const stepId of stepOrderForResume) {
+      if (jobStepNeedsWork(jobDetails[stepId]?.status)) return stepId;
+    }
+    return null;
+  }, [activeRunId, activeRunStatus, stepOrderForResume, jobDetails]);
 
   useEffect(() => {
+    const g = parseDag(yamlText);
     const next: Record<string, StepStatus> = {};
-    for (const id of graph.nodes) next[id] = "idle";
+    for (const id of g.nodes) next[id] = "idle";
     setStatusByStep(next);
-  }, [yamlText, graph.nodes]);
+    if (skipYamlResetOnceRef.current) {
+      skipYamlResetOnceRef.current = false;
+      return;
+    }
+    setJobDetails({});
+    setServerStepOrder(null);
+    setActiveRunId(null);
+    setActiveRunStatus(null);
+    setJobErrors({});
+    try {
+      localStorage.removeItem(LAST_MODEL_RUN_ID_STORAGE_KEY);
+    } catch {
+      /* ignore */
+    }
+  }, [yamlText]);
+
+  useEffect(() => {
+    if (!isRunning) return;
+    const id = window.setInterval(() => setNowMs(Date.now()), 300);
+    return () => window.clearInterval(id);
+  }, [isRunning]);
+
+  const fetchAndApplyRunState = useCallback(async (rid: string): Promise<boolean> => {
+    try {
+      const res = await fetch(`/api/runs/${rid}`);
+      if (!res.ok) return false;
+      const runState = (await res.json()) as RunState;
+      setActiveRunId(rid);
+      setActiveRunStatus(runState.status);
+      setJobErrors(jobErrorsFromRun(runState));
+      setJobDetails({ ...runState.jobs });
+      const waves = runState.dag?.executionWaves ?? [];
+      setServerStepOrder(waves.length ? waves.flat() : null);
+      setStatusByStep((prev) => {
+        const next = { ...prev };
+        for (const [jid, j] of Object.entries(runState.jobs)) {
+          next[jid] = mapJobStatus(j.status);
+        }
+        return next;
+      });
+      if (runState.status === "completed" || runState.status === "failed") {
+        setIsRunning(false);
+        eventSourceRef.current?.close();
+        eventSourceRef.current = null;
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  /** After reload: pull last run from API (orchestrator hydrates from Supabase when in-memory map is empty). */
+  useEffect(() => {
+    let cancelled = false;
+    let rid = "";
+    try {
+      rid = localStorage.getItem(LAST_MODEL_RUN_ID_STORAGE_KEY)?.trim() ?? "";
+    } catch {
+      return;
+    }
+    if (!rid) return;
+    void (async () => {
+      const ok = await fetchAndApplyRunState(rid);
+      if (cancelled) return;
+      if (!ok) {
+        try {
+          localStorage.removeItem(LAST_MODEL_RUN_ID_STORAGE_KEY);
+        } catch {
+          /* ignore */
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchAndApplyRunState]);
+
+  const stopStep = useCallback(
+    async (stepId: string) => {
+      if (!activeRunId) return;
+      try {
+        await fetch(`/api/runs/${activeRunId}/jobs/${encodeURIComponent(stepId)}/stop`, { method: "POST" });
+      } catch {
+        /* ignore */
+      }
+      await fetchAndApplyRunState(activeRunId);
+    },
+    [activeRunId, fetchAndApplyRunState],
+  );
 
   const stop = useCallback(() => {
     abortRef.current = true;
@@ -138,27 +438,217 @@ export default function RunPage() {
     setIsRunning(false);
   }, []);
 
-  const run = useCallback(async () => {
-    if (!runnable || isRunning) return;
+  const beginWatchingRun = useCallback(
+    (runId: string) => {
+      const syncFromServer = async () => {
+        if (abortRef.current) return;
+        await fetchAndApplyRunState(runId);
+      };
 
-    const converted = toOrchestratorWorkflowYaml(yamlText);
-    if (!converted.ok) {
-      setRunError(converted.error);
-      return;
-    }
+      void syncFromServer();
+      if (abortRef.current) {
+        setIsRunning(false);
+        return;
+      }
+
+      eventSourceRef.current?.close();
+      const es = new EventSource(`/api/runs/${runId}/events`);
+      eventSourceRef.current = es;
+
+      es.onmessage = (ev) => {
+        if (abortRef.current) return;
+        try {
+          const evt = JSON.parse(ev.data) as {
+            type: string;
+            jobId?: string;
+            payload?: {
+              reason?: string;
+              error?: string;
+              spentUsd?: number;
+              limitUsd?: number;
+              checkoutUrl?: string;
+              intentId?: string;
+            };
+          };
+          if (
+            evt.type === "JOB_STARTED" ||
+            evt.type === "JOB_COMPLETED" ||
+            evt.type === "JOB_FAILED" ||
+            evt.type === "JOB_RETRY_WARNING" ||
+            evt.type === "GATE_PENDING" ||
+            evt.type === "GATE_APPROVED" ||
+            evt.type === "GATE_REJECTED" ||
+            evt.type === "BUDGET_EXCEEDED" ||
+            evt.type === "BUDGET_FUNDED" ||
+            evt.type === "JOB_RESUMED" ||
+            evt.type === "RUN_RESUMED" ||
+            evt.type === "RUN_COMPLETED" ||
+            evt.type === "RUN_FAILED"
+          ) {
+            void syncFromServer();
+          }
+          if (evt.type === "BUDGET_EXCEEDED" && evt.payload?.checkoutUrl) {
+            setBudgetAlert({
+              jobId: evt.jobId ?? "unknown",
+              spentUsd: evt.payload.spentUsd ?? 0,
+              limitUsd: evt.payload.limitUsd ?? 0,
+              checkoutUrl: evt.payload.checkoutUrl,
+              intentId: evt.payload.intentId ?? "",
+            });
+          }
+          if (evt.type === "BUDGET_FUNDED" || evt.type === "JOB_RESUMED") {
+            setBudgetAlert(null);
+          }
+          if (evt.type === "RUN_COMPLETED" || evt.type === "RUN_FAILED") {
+            setBudgetAlert(null);
+            es.close();
+            if (eventSourceRef.current === es) eventSourceRef.current = null;
+            setIsRunning(false);
+          }
+        } catch {
+          /* ignore */
+        }
+      };
+
+      es.onerror = () => {
+        es.close();
+        if (eventSourceRef.current === es) eventSourceRef.current = null;
+        if (!abortRef.current) void syncFromServer();
+        setIsRunning(false);
+      };
+    },
+    [fetchAndApplyRunState],
+  );
+
+  const resumeFromFirstIncomplete = useCallback(async () => {
+    if (!activeRunId || !firstIncompleteStepId || isRunning) return;
 
     abortRef.current = false;
     setRunError(null);
-    setJobErrors({});
-    setActiveRunStatus(null);
     setIsRunning(true);
 
-    const idle: Record<string, StepStatus> = {};
-    for (const id of graph.nodes) idle[id] = "idle";
-    setStatusByStep(idle);
-
-    let runId: string;
     try {
+      const st = jobDetails[firstIncompleteStepId]?.status;
+      if (st === "failed") {
+        const res = await fetch(
+          `/api/runs/${encodeURIComponent(activeRunId)}/jobs/${encodeURIComponent(firstIncompleteStepId)}/retry`,
+          { method: "POST" },
+        );
+        if (!res.ok) {
+          const errBody = (await res.json().catch(() => ({}))) as { error?: string };
+          throw new Error(errBody.error ?? `${res.status} ${res.statusText}`);
+        }
+      } else {
+        const res = await fetch(`/api/runs/${encodeURIComponent(activeRunId)}/continue`, {
+          method: "POST",
+        });
+        if (!res.ok) {
+          const errBody = (await res.json().catch(() => ({}))) as { error?: string };
+          throw new Error(errBody.error ?? `${res.status} ${res.statusText}`);
+        }
+      }
+
+      await fetchAndApplyRunState(activeRunId);
+      try {
+        localStorage.setItem(LAST_MODEL_RUN_ID_STORAGE_KEY, activeRunId);
+      } catch {
+        /* ignore */
+      }
+      beginWatchingRun(activeRunId);
+    } catch (e) {
+      setIsRunning(false);
+      setRunError(e instanceof Error ? e.message : String(e));
+    }
+  }, [activeRunId, beginWatchingRun, fetchAndApplyRunState, firstIncompleteStepId, isRunning, jobDetails]);
+
+  const mayContinuePersistedRun = useMemo(() => {
+    if (activeRunId && activeRunStatus && activeRunStatus !== "completed") return true;
+    try {
+      return Boolean(localStorage.getItem(LAST_MODEL_RUN_ID_STORAGE_KEY)?.trim());
+    } catch {
+      return false;
+    }
+  }, [activeRunId, activeRunStatus, yamlText]);
+
+  const run = useCallback(async () => {
+    if (isRunning) return;
+
+    abortRef.current = false;
+    setRunError(null);
+
+    let resumeRunId: string | undefined;
+    try {
+      const s = localStorage.getItem(LAST_MODEL_RUN_ID_STORAGE_KEY)?.trim();
+      if (s) resumeRunId = s;
+    } catch {
+      /* ignore */
+    }
+
+    setIsRunning(true);
+
+    try {
+      if (resumeRunId) {
+        const cont = await fetch(`/api/runs/${encodeURIComponent(resumeRunId)}/continue`, {
+          method: "POST",
+        });
+        if (cont.ok) {
+          const started = (await cont.json()) as RunState;
+          const runId = started.runId;
+          setActiveRunId(runId);
+          setActiveRunStatus(started.status);
+          setJobErrors(jobErrorsFromRun(started));
+          setJobDetails({ ...started.jobs });
+          const waves = started.dag?.executionWaves ?? [];
+          setServerStepOrder(waves.length ? waves.flat() : null);
+          setStatusByStep((prev) => {
+            const next = { ...prev };
+            for (const [jid, j] of Object.entries(started.jobs)) {
+              next[jid] = mapJobStatus(j.status);
+            }
+            return next;
+          });
+          try {
+            localStorage.setItem(LAST_MODEL_RUN_ID_STORAGE_KEY, runId);
+          } catch {
+            /* ignore */
+          }
+          beginWatchingRun(runId);
+          return;
+        }
+
+        try {
+          localStorage.removeItem(LAST_MODEL_RUN_ID_STORAGE_KEY);
+        } catch {
+          /* ignore */
+        }
+        const errBody = (await cont.json().catch(() => ({}))) as { error?: string };
+        setIsRunning(false);
+        setRunError(
+          errBody.error ??
+            `Could not resume the saved run (${resumeRunId}). It may already be finished or the server rejected continue. The saved run id was cleared; fix the issue or start a new run with Run.`,
+        );
+        return;
+      }
+
+      if (!runnable) {
+        setIsRunning(false);
+        return;
+      }
+
+      const converted = toOrchestratorWorkflowYaml(yamlText);
+      if (!converted.ok) {
+        setRunError(converted.error);
+        setIsRunning(false);
+        return;
+      }
+
+      setJobErrors({});
+      setJobDetails({});
+      setActiveRunStatus(null);
+      const idle: Record<string, StepStatus> = {};
+      for (const id of graph.nodes) idle[id] = "idle";
+      setStatusByStep(idle);
+
       const res = await fetch("/api/runs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -169,120 +659,32 @@ export default function RunPage() {
         throw new Error(errBody.error ?? `${res.status} ${res.statusText}`);
       }
       const started = (await res.json()) as RunState;
-      runId = started.runId;
+      const runId = started.runId;
       setActiveRunId(runId);
       setActiveRunStatus(started.status);
       setJobErrors(jobErrorsFromRun(started));
+      setJobDetails({ ...started.jobs });
+      const waves = started.dag?.executionWaves ?? [];
+      setServerStepOrder(waves.length ? waves.flat() : null);
+      setStatusByStep((prev) => {
+        const next = { ...prev };
+        for (const [jid, j] of Object.entries(started.jobs)) {
+          next[jid] = mapJobStatus(j.status);
+        }
+        return next;
+      });
+      try {
+        localStorage.setItem(LAST_MODEL_RUN_ID_STORAGE_KEY, runId);
+      } catch {
+        /* ignore */
+      }
+      beginWatchingRun(runId);
     } catch (e) {
       setIsRunning(false);
       setActiveRunId(null);
       setRunError(e instanceof Error ? e.message : String(e));
-      return;
     }
-
-    const syncFromServer = async () => {
-      if (abortRef.current) return;
-      try {
-        const res = await fetch(`/api/runs/${runId}`);
-        if (!res.ok) return;
-        const runState = (await res.json()) as RunState;
-        setActiveRunStatus(runState.status);
-        setJobErrors(jobErrorsFromRun(runState));
-        setJobDetails(() => {
-          const next: Record<string, { costUsd?: number; tokensUsed?: number; budgetUsd?: number; status: string }> = {};
-          for (const [jid, j] of Object.entries(runState.jobs)) {
-            next[jid] = { costUsd: j.costUsd, tokensUsed: j.tokensUsed, status: j.status };
-          }
-          return next;
-        });
-        setStatusByStep((prev) => {
-          const next = { ...prev };
-          for (const [jid, j] of Object.entries(runState.jobs)) {
-            next[jid] = mapJobStatus(j.status);
-          }
-          return next;
-        });
-        if (runState.status === "completed" || runState.status === "failed") {
-          setIsRunning(false);
-          eventSourceRef.current?.close();
-          eventSourceRef.current = null;
-        }
-      } catch {
-        /* ignore */
-      }
-    };
-
-    await syncFromServer();
-
-    if (abortRef.current) {
-      setIsRunning(false);
-      return;
-    }
-
-    const es = new EventSource(`/api/runs/${runId}/events`);
-    eventSourceRef.current = es;
-
-    es.onmessage = (ev) => {
-      if (abortRef.current) return;
-      try {
-        const evt = JSON.parse(ev.data) as {
-          type: string;
-          jobId?: string;
-          payload?: {
-            reason?: string;
-            error?: string;
-            spentUsd?: number;
-            limitUsd?: number;
-            checkoutUrl?: string;
-            intentId?: string;
-          };
-        };
-        if (
-          evt.type === "JOB_STARTED" ||
-          evt.type === "JOB_COMPLETED" ||
-          evt.type === "JOB_FAILED" ||
-          evt.type === "JOB_RETRY_WARNING" ||
-          evt.type === "GATE_PENDING" ||
-          evt.type === "GATE_APPROVED" ||
-          evt.type === "GATE_REJECTED" ||
-          evt.type === "BUDGET_EXCEEDED" ||
-          evt.type === "BUDGET_FUNDED" ||
-          evt.type === "JOB_RESUMED" ||
-          evt.type === "RUN_COMPLETED" ||
-          evt.type === "RUN_FAILED"
-        ) {
-          void syncFromServer();
-        }
-        if (evt.type === "BUDGET_EXCEEDED" && evt.payload?.checkoutUrl) {
-          setBudgetAlert({
-            jobId: evt.jobId ?? "unknown",
-            spentUsd: evt.payload.spentUsd ?? 0,
-            limitUsd: evt.payload.limitUsd ?? 0,
-            checkoutUrl: evt.payload.checkoutUrl,
-            intentId: evt.payload.intentId ?? "",
-          });
-        }
-        if (evt.type === "BUDGET_FUNDED" || evt.type === "JOB_RESUMED") {
-          setBudgetAlert(null);
-        }
-        if (evt.type === "RUN_COMPLETED" || evt.type === "RUN_FAILED") {
-          setBudgetAlert(null);
-          es.close();
-          if (eventSourceRef.current === es) eventSourceRef.current = null;
-          setIsRunning(false);
-        }
-      } catch {
-        /* ignore */
-      }
-    };
-
-    es.onerror = () => {
-      es.close();
-      if (eventSourceRef.current === es) eventSourceRef.current = null;
-      if (!abortRef.current) void syncFromServer();
-      setIsRunning(false);
-    };
-  }, [graph.nodes, isRunning, runnable, yamlText]);
+  }, [beginWatchingRun, graph.nodes, isRunning, runnable, yamlText]);
 
   return (
     <main className="mx-auto flex min-h-0 w-full max-w-7xl flex-1 flex-col gap-8 px-5 py-8 sm:px-8 lg:py-12">
@@ -315,7 +717,7 @@ export default function RunPage() {
           }} disabled={!isRunning}>
             Kill Run
           </Button>
-          <Button type="button" onClick={run} disabled={!runnable || isRunning}>
+          <Button type="button" onClick={() => void run()} disabled={isRunning || (!runnable && !mayContinuePersistedRun)}>
             Run
           </Button>
         </div>
@@ -474,17 +876,27 @@ export default function RunPage() {
             <p className="font-medium text-foreground">Typical fixes</p>
             <ul className="mt-2 list-disc space-y-1 pl-4">
               <li>
+                <code className="rounded bg-muted px-1">Refusing to start shell-capable job</code> /{" "}
+                <code className="rounded bg-muted px-1">ALLOW_SHELL_TOOL</code>: set{" "}
+                <code className="rounded bg-muted px-1">ALLOW_SHELL_TOOL=true</code> in{" "}
+                <code className="rounded bg-muted px-1">apps/orchestrator/.env</code>, restart the orchestrator, and
+                set <code className="rounded bg-muted px-1">TOOL_SHELL_CWD</code> to your essay workspace (preset uses{" "}
+                <code className="rounded bg-muted px-1">essay-draft.txt</code> relative to that folder).
+              </li>
+              <li>
                 CLōD HTTP 403/401: check <code className="rounded bg-muted px-1">CLOD_API_KEY</code>,{" "}
                 <code className="rounded bg-muted px-1">CLOD_BASE_URL</code>, and{" "}
                 <code className="rounded bg-muted px-1">DEFAULT_AGENT_MODEL</code> in{" "}
                 <code className="rounded bg-muted px-1">apps/orchestrator/.env</code>.
               </li>
               <li>
-                Essay / shell: set <code className="rounded bg-muted px-1">ALLOW_SHELL_TOOL=true</code>,{" "}
-                <code className="rounded bg-muted px-1">TOOL_SHELL_CWD</code> to your essay folder (must match paths in the YAML / essay preset), and relax{" "}
-                <code className="rounded bg-muted px-1">TOOL_SHELL_ALLOWLIST_REGEX</code> if commands are blocked.
+                Essay / shell allowlist: if commands are blocked, relax{" "}
+                <code className="rounded bg-muted px-1">TOOL_SHELL_ALLOWLIST_REGEX</code> (dev only).
               </li>
-              <li>Orchestrator must be running on port 3001 (or set web <code className="rounded bg-muted px-1">ORCHESTRATOR_URL</code>).</li>
+              <li>
+                Orchestrator URL: default web proxy is port 3001; if the orchestrator bound another port, set web{" "}
+                <code className="rounded bg-muted px-1">ORCHESTRATOR_URL</code> (see orchestrator startup log).
+              </li>
             </ul>
           </div>
         </div>
@@ -504,63 +916,31 @@ export default function RunPage() {
         <p className="text-sm text-muted-foreground">No steps defined. Add steps in the DAG editor.</p>
       ) : (
         <ul className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          {order.map((stepId) => {
-            const deps = graph.depsByNode.get(stepId) ?? [];
-            const type = graph.stepTypes.get(stepId);
-            const status = statusByStep[stepId] ?? "idle";
-            const detail = jobDetails[stepId];
-            return (
-              <li
-                key={stepId}
-                className="flex flex-col gap-3 rounded-2xl border border-border bg-card p-4 shadow-sm ring-1 ring-black/5 dark:ring-white/10"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="font-mono text-sm font-semibold text-foreground">{stepId}</p>
-                    {type ? (
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        type: <span className="font-mono text-foreground">{type}</span>
-                      </p>
-                    ) : null}
-                  </div>
-                  <StatusLight status={status} />
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  depends on:{" "}
-                  <span className="font-mono text-foreground">{deps.length ? deps.join(", ") : "—"}</span>
-                </p>
-                {(detail?.costUsd != null || detail?.tokensUsed != null) && (
-                  <div className="flex flex-wrap gap-3">
-                    {detail.costUsd != null && (
-                      <div className="rounded-lg bg-muted/50 px-2.5 py-1.5">
-                        <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Cost </span>
-                        <span className="font-mono text-xs font-semibold text-emerald-600">${detail.costUsd.toFixed(4)}</span>
-                      </div>
-                    )}
-                    {detail.tokensUsed != null && (
-                      <div className="rounded-lg bg-muted/50 px-2.5 py-1.5">
-                        <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Tokens </span>
-                        <span className="font-mono text-xs font-semibold text-foreground">{detail.tokensUsed.toLocaleString()}</span>
-                      </div>
-                    )}
-                  </div>
-                )}
-                {budgetAlert?.jobId === stepId ? (
-                  <div className="rounded-lg border border-amber-400/40 bg-amber-50 p-3 dark:bg-amber-950/30">
-                    <p className="text-xs font-medium text-amber-700 dark:text-amber-300">⚠️ Awaiting funding — ${budgetAlert.spentUsd.toFixed(4)} / ${budgetAlert.limitUsd.toFixed(4)} budget</p>
-                  </div>
-                ) : null}
-                {jobErrors[stepId] ? (
-                  <div className="rounded-lg border border-destructive/35 bg-destructive/5 p-3">
-                    <p className="text-xs font-medium text-destructive">Error</p>
-                    <pre className="mt-1 max-h-36 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-destructive">
-                      {jobErrors[stepId]}
-                    </pre>
-                  </div>
-                ) : null}
-              </li>
-            );
-          })}
+          {order.map((stepId) => (
+            <ModelRunnerStepCard
+              key={stepId}
+              stepId={stepId}
+              deps={graph.depsByNode.get(stepId) ?? []}
+              stepType={graph.stepTypes.get(stepId)}
+              status={statusByStep[stepId] ?? "idle"}
+              job={jobDetails[stepId]}
+              jobError={jobErrors[stepId]}
+              nowMs={nowMs}
+              activeRunId={activeRunId}
+              onStopStep={(id) => void stopStep(id)}
+              resumeCta={
+                activeRunId &&
+                firstIncompleteStepId === stepId &&
+                activeRunStatus !== "completed"
+                  ? {
+                      label: jobDetails[stepId]?.status === "failed" ? "Retry step" : "Resume run",
+                      disabled: isRunning,
+                      onClick: () => void resumeFromFirstIncomplete(),
+                    }
+                  : null
+              }
+            />
+          ))}
         </ul>
       )}
     </main>

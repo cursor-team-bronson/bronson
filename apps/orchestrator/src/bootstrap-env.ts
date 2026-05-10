@@ -1,15 +1,13 @@
 import fs from "fs";
 import path from "path";
-import { fileURLToPath } from "node:url";
 import { config as loadEnv } from "dotenv";
 
 /**
- * Resolve `.env` paths from this file's location (`apps/orchestrator/src`) so load order
- * does not depend on `process.cwd()` or folder names like `orchestrator`.
+ * Resolve `.env` paths from this module's directory (`src/` under dev, `dist/` when compiled)
+ * so load order does not depend on `process.cwd()` or folder names like `orchestrator`.
  */
 function envPathCandidates(): string[] {
-  const srcDir = path.dirname(fileURLToPath(import.meta.url));
-  const orchestratorRoot = path.resolve(srcDir, "..");
+  const orchestratorRoot = path.resolve(__dirname, "..");
   const repoRoot = path.resolve(orchestratorRoot, "..", "..");
 
   return [path.join(repoRoot, ".env"), path.join(orchestratorRoot, ".env")];

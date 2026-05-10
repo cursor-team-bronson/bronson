@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import { AgentRunOptions, AgentRunResult } from "@bronson/types";
-import { buildJobContext } from "./context-router.js";
+import { buildJobContext, stripClodDsmlFromUserText } from "./context-router.js";
 import { eventLog } from "../event-log/event-log.js";
 import { resolveTools } from "./tool-registry.js";
 import { resolveAgentModel } from "./resolve-model.js";
@@ -55,28 +55,50 @@ export async function runAgent(
   const toolNames = jobConfig.tools ?? [];
   const resolved = toolNames.length > 0 ? resolveTools(toolNames) : { tools: [] as OpenAI.Chat.ChatCompletionTool[], execute: new Map<string, (a: Record<string, unknown>) => Promise<string>>() };
 
+  // Prior jobs' stored outputs can contain partial DSML tool markup; CLōD rejects that inside a
+  // new user message when this job has tools enabled (same 400 as incomplete assistant content).
+  if (resolved.tools.length) userMessage = stripClodDsmlFromUserText(userMessage);
+
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [{ role: "user", content: userMessage }];
   const maxRounds = jobConfig.tool_rounds_max ?? 12;
   const model = resolveAgentModel(jobConfig);
 
   let totalTokens = 0;
+  let totalPromptTokens = 0;
+  let totalCompletionTokens = 0;
   let totalCost = 0;
 
   for (let round = 0; round < maxRounds; round++) {
+    abortSignal?.throwIfAborted();
     let response;
     try {
-      response = await clod.chat.completions.create({
-        model,
-        messages,
-        tools: resolved.tools.length ? resolved.tools : undefined,
-        tool_choice: resolved.tools.length ? "auto" : undefined,
-      });
+      response = await clod.chat.completions.create(
+        {
+          model,
+          messages,
+          tools: resolved.tools.length ? resolved.tools : undefined,
+          tool_choice: resolved.tools.length ? "auto" : undefined,
+        },
+        { signal: abortSignal ?? undefined },
+      );
     } catch (e) {
+      if (e instanceof OpenAI.APIUserAbortError) {
+        throw new Error("Stopped by user");
+      }
+      if (e instanceof Error && e.name === "AbortError") {
+        throw new Error("Stopped by user");
+      }
       throw new Error(formatClodRequestError(e));
     }
 
     const usage = response.usage;
-    if (usage) totalTokens += (usage.prompt_tokens ?? 0) + (usage.completion_tokens ?? 0);
+    if (usage) {
+      const pt = usage.prompt_tokens ?? 0;
+      const ct = usage.completion_tokens ?? 0;
+      totalPromptTokens += pt;
+      totalCompletionTokens += ct;
+      totalTokens += pt + ct;
+    }
     totalCost += Number((response as { cost?: number }).cost ?? 0);
 
     // Deduct from budget after each round. If exceeded, re-throw with the
@@ -102,9 +124,13 @@ export async function runAgent(
     const msg = response.choices[0]?.message;
     if (!msg) throw new Error("No assistant message in completion response");
 
+    // CLōD may treat assistant `content` as DSML when tools are in play. Models sometimes emit
+    // incomplete DSML in `content` alongside structured `tool_calls`; re-sending that `content`
+    // on the next request triggers 400 ("Missing end token '</｜DSML｜function_calls>'"). Match
+    // OpenAI guidance: omit prose when this turn is tool-driven (`content: null`).
     messages.push({
       role: "assistant",
-      content: msg.content ?? null,
+      content: msg.tool_calls?.length ? null : (msg.content ?? null),
       tool_calls: msg.tool_calls,
     });
 
@@ -113,6 +139,8 @@ export async function runAgent(
         output: msg.content ?? "",
         tokensUsed: totalTokens,
         costUsd: totalCost,
+        promptTokens: totalPromptTokens,
+        completionTokens: totalCompletionTokens,
       };
     }
 
