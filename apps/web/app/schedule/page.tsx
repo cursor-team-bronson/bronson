@@ -133,7 +133,7 @@ export default function SchedulePage() {
             Workflow schedule
           </h1>
           <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground">
-            Queue a workflow YAML to start at a chosen time. The orchestrator polls every few seconds (configurable with{" "}
+            Queue a workflow YAML to start at a chosen time (must be at least a few seconds in the future on the server). The orchestrator polls every few seconds (configurable with{" "}
             <code className="rounded bg-muted px-1 py-0.5 text-xs">BRONSON_SCHEDULE_POLL_MS</code>) and calls the same path as{" "}
             <code className="rounded bg-muted px-1 py-0.5 text-xs">POST /api/runs</code>. Schedules are stored under{" "}
             <code className="text-xs">apps/orchestrator/data/workflow-schedules.json</code> (or{" "}

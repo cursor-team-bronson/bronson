@@ -56,7 +56,11 @@ function saveSync(): void {
     return;
   }
   const payload: StoreFile = { schedules: [...schedules.values()] };
-  fs.writeFileSync(p, JSON.stringify(payload, null, 2), "utf8");
+  try {
+    fs.writeFileSync(p, JSON.stringify(payload, null, 2), "utf8");
+  } catch (e) {
+    console.error("[scheduler] Could not persist schedule store (disk full, permissions, etc.):", e);
+  }
 }
 
 export function listSchedules(): WorkflowScheduleRecord[] {
@@ -70,6 +74,10 @@ export function addSchedule(input: { yaml?: unknown; runAt?: unknown; label?: un
   const runAtStr = typeof runAtRaw === "string" ? runAtRaw.trim() : "";
   const runAtMs = Date.parse(runAtStr);
   if (Number.isNaN(runAtMs)) throw new Error("runAt must be a valid ISO date string");
+  const pastSkewMs = 5000;
+  if (runAtMs < Date.now() - pastSkewMs) {
+    throw new Error("runAt must be in the future (at least a few seconds from now)");
+  }
   parseWorkflowString(yamlStr);
   const labelRaw = input.label;
   const label = typeof labelRaw === "string" ? labelRaw.trim() : "";
@@ -103,20 +111,37 @@ async function fireDue(): Promise<void> {
       .filter((s) => s.status === "pending" && Date.parse(s.runAt) <= now)
       .sort((a, b) => Date.parse(a.runAt) - Date.parse(b.runAt));
     for (const s of due) {
+      if (s.status !== "pending") continue;
       try {
         const parsed = parseWorkflowString(s.yaml);
+        if (s.status !== "pending") continue;
         const run = await startRun(parsed, s.yaml);
+        if (s.status !== "pending") {
+          console.warn(
+            `[scheduler] Schedule ${s.id} was no longer pending after startRun (e.g. cancelled in flight); not marking fired`,
+          );
+          continue;
+        }
         s.status = "fired";
         s.firedAt = new Date().toISOString();
         s.lastRunId = run.runId;
         delete s.lastError;
       } catch (e) {
+        if (s.status !== "pending") {
+          console.warn(
+            `[scheduler] Schedule ${s.id} was no longer pending after startRun error; not marking failed`,
+            e,
+          );
+          continue;
+        }
         s.status = "failed";
         s.firedAt = new Date().toISOString();
         s.lastError = String(e);
       }
       saveSync();
     }
+  } catch (e) {
+    console.error("[scheduler] Unexpected error in fireDue:", e);
   } finally {
     tickInFlight = false;
   }
