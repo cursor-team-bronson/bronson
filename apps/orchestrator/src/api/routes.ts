@@ -117,12 +117,12 @@ router.post("/runs/:runId/jobs/:jobId/fund", (req, res) => {
     }
   }
   try {
-    const { amountUsd } = req.body as { amountUsd?: number };
+    const { amountUsd, intentId } = req.body as { amountUsd?: number; intentId?: string };
     if (typeof amountUsd !== "number" || amountUsd <= 0) {
       res.status(400).json({ error: "amountUsd (positive number) required" });
       return;
     }
-    topUpJobBudget(req.params.runId, req.params.jobId, amountUsd);
+    topUpJobBudget(req.params.runId, req.params.jobId, amountUsd, intentId);
     res.json({ ok: true });
   } catch (err) { res.status(400).json({ error: String(err) }); }
 });
@@ -135,6 +135,14 @@ router.post("/runs/:runId/jobs/:jobId/cancel-funding", (req, res) => {
 });
 
 router.post("/generate-workflow", async (req: Request, res: Response) => {
+  const internalSecret = process.env.INTERNAL_API_SECRET;
+  if (internalSecret) {
+    const provided = req.headers["x-internal-secret"];
+    if (provided !== internalSecret) {
+      res.status(403).json({ error: "Forbidden — invalid or missing X-Internal-Secret header" });
+      return;
+    }
+  }
   try {
     const { description } = req.body as { description?: string };
     if (!description?.trim()) {
