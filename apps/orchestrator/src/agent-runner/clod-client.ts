@@ -39,21 +39,59 @@ export function assertClodConfigured(): void {
   }
 }
 
+function formatPriorAttempts(errors: string[]): string {
+  const lines = errors.map((e, i) => `${i + 1}. ${e}`);
+  return `### Prior attempts on this job (learn from these errors)\n${lines.join("\n")}`;
+}
+
+/** True when the model ended with a shell-only terminator (essay lives in the previous assistant turn). */
+function trivialTerminator(content: string): boolean {
+  const t = content.trim();
+  return t.length === 0 || /^(done|ok|finished|complete)\.?$/i.test(t);
+}
+
+function resolveFinalAssistantOutput(
+  messages: OpenAI.Chat.ChatCompletionMessageParam[],
+  lastAssistantContent: string | null,
+): string {
+  const chunks: string[] = [];
+  for (const m of messages) {
+    if (m.role !== "assistant") continue;
+    const c = m.content;
+    if (typeof c === "string" && c.trim().length > 0) chunks.push(c);
+  }
+  const last = lastAssistantContent ?? "";
+  if (!trivialTerminator(last)) return last;
+  /** Essay pattern: penultimate turn holds draft; last turn is "done". */
+  if (chunks.length >= 2) return chunks[chunks.length - 2]!;
+  if (chunks.length === 1) return chunks[0]!;
+  if (chunks.length > 0) return chunks.join("\n\n");
+  if (last.trim().length > 0) return last;
+  return (
+    "[No assistant text was captured (tool-only turns). Add a final instruction in YAML for the model " +
+    "to emit required markers or summary prose, or raise tool_rounds_max / context_budget.]"
+  );
+}
+
 export async function runAgent(
   runId: string,
   options: AgentRunOptions,
   upstreamOutputs: Record<string, string>,
 ): Promise<AgentRunResult> {
-  const { jobId, jobConfig } = options;
-  const contextSection = buildJobContext(upstreamOutputs, jobConfig.context_budget);
-  const userMessage = contextSection
-    ? `${contextSection}\n\n---\n\n${jobConfig.prompt}`
-    : jobConfig.prompt;
+  const { jobId, jobConfig, priorAttemptErrors, upstreamKind, abortSignal } = options;
+  const contextSection = buildJobContext(upstreamOutputs, jobConfig.context_budget, upstreamKind);
+  const attemptSection =
+    priorAttemptErrors && priorAttemptErrors.length > 0 ? `${formatPriorAttempts(priorAttemptErrors)}\n\n---\n\n` : "";
+  const body = contextSection ? `${contextSection}\n\n---\n\n${jobConfig.prompt}` : jobConfig.prompt;
+  let userMessage = attemptSection ? `${attemptSection}${body}` : body;
 
   eventLog.append(runId, "JOB_STARTED", jobId);
 
   const toolNames = jobConfig.tools ?? [];
-  const resolved = toolNames.length > 0 ? resolveTools(toolNames) : { tools: [] as OpenAI.Chat.ChatCompletionTool[], execute: new Map<string, (a: Record<string, unknown>) => Promise<string>>() };
+  const resolved =
+    toolNames.length > 0
+      ? resolveTools(toolNames)
+      : { tools: [] as OpenAI.Chat.ChatCompletionTool[], execute: new Map<string, (a: Record<string, unknown>) => Promise<string>>() };
 
   // Prior jobs' stored outputs can contain partial DSML tool markup; CLōD rejects that inside a
   // new user message when this job has tools enabled (same 400 as incomplete assistant content).
@@ -101,28 +139,28 @@ export async function runAgent(
     }
     totalCost += Number((response as { cost?: number }).cost ?? 0);
 
-    // Deduct from budget after each round. If exceeded, re-throw with the
-    // final output attached *only* when this was a terminal round (no tool
-    // calls). When the model returned tool_calls, content is null — passing
-    // undefined tells run-manager to retry the entire agent call after funding.
+    const msg = response.choices[0]?.message;
+    if (!msg) throw new Error("No assistant message in completion response");
+
     try {
       await budgetTracker.deduct(runId, jobId, Number((response as { cost?: number }).cost ?? 0));
     } catch (err) {
       if (err instanceof BudgetExceededError) {
-        const msg = response.choices[0]?.message;
-        const isFinalAnswer = !msg?.tool_calls?.length && msg?.content != null;
+        const isFinalAnswer = !msg.tool_calls?.length && msg.content != null;
         throw new BudgetExceededError(
-          err.runId, err.jobId, err.spentUsd, err.limitUsd,
-          err.checkoutUrl, err.intentId,
-          isFinalAnswer ? msg!.content! : undefined,
-          totalTokens, totalCost,
+          err.runId,
+          err.jobId,
+          err.spentUsd,
+          err.limitUsd,
+          err.checkoutUrl,
+          err.intentId,
+          isFinalAnswer ? msg.content! : undefined,
+          totalTokens,
+          totalCost,
         );
       }
       throw err;
     }
-
-    const msg = response.choices[0]?.message;
-    if (!msg) throw new Error("No assistant message in completion response");
 
     // CLōD may treat assistant `content` as DSML when tools are in play. Models sometimes emit
     // incomplete DSML in `content` alongside structured `tool_calls`; re-sending that `content`
@@ -136,7 +174,7 @@ export async function runAgent(
 
     if (!msg.tool_calls?.length) {
       return {
-        output: msg.content ?? "",
+        output: resolveFinalAssistantOutput(messages, msg.content ?? null),
         tokensUsed: totalTokens,
         costUsd: totalCost,
         promptTokens: totalPromptTokens,
@@ -171,5 +209,8 @@ export async function runAgent(
     }
   }
 
-  throw new Error(`Tool / assistant loop exceeded tool_rounds_max (${maxRounds})`);
+  throw new Error(
+    `Tool / assistant loop exceeded tool_rounds_max (${maxRounds}). ` +
+      `Raise tool_rounds_max on this job in YAML (shell-heavy jobs often need 40–64).`,
+  );
 }

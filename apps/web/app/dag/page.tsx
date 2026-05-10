@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import {
+  dreamStateWorkflowYaml,
   essayWorkflowYaml,
   parseDag,
   starterYaml,
@@ -125,6 +126,21 @@ export default function DagPage() {
             }}
           >
             Load essay test (3 cycles)
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={() => {
+              setYamlText(dreamStateWorkflowYaml);
+              try {
+                localStorage.setItem(WORKFLOW_YAML_STORAGE_KEY, dreamStateWorkflowYaml);
+              } catch {
+                /* ignore */
+              }
+            }}
+          >
+            Load dream-state
           </Button>
           <div
             className={`inline-flex w-fit shrink-0 items-center rounded-full border px-3 py-1 text-xs font-medium ${workflowStatusTone}`}
