@@ -9,8 +9,6 @@ import { generateWorkflow } from "../meta-agent/yaml-generator.js";
 
 export const router = Router();
 
-// ─── Runs ─────────────────────────────────────────────────────────────────────
-
 router.post("/runs", async (req: Request, res: Response) => {
   try {
     const { yaml } = req.body as { yaml?: string };
@@ -27,8 +25,9 @@ router.get("/runs/:runId", (req, res) => {
   res.json(run);
 });
 
+// Dedicated DAG endpoint for frontend (same payload as `RunState.dag`)
 router.get("/runs/:runId/dag", (req, res) => {
-  const run = getRun(req.params.runId) as any;
+  const run = getRun(req.params.runId);
   if (!run) { res.status(404).json({ error: "Run not found" }); return; }
   if (!run.dag) { res.status(404).json({ error: "DAG not found for this run" }); return; }
   res.json(run.dag);
@@ -46,8 +45,6 @@ router.get("/runs/:runId/events/history", (req, res) => {
   res.json(eventLog.getEventsForRun(req.params.runId));
 });
 
-// ─── Gates ────────────────────────────────────────────────────────────────────
-
 router.get("/runs/:runId/gates", (req, res) =>
   res.json(gateManager.listPending(req.params.runId)),
 );
@@ -60,23 +57,14 @@ router.post("/runs/:runId/gates/:jobId/approve", (req, res) => {
 });
 
 router.post("/runs/:runId/gates/:jobId/reject", (req, res) => {
-  try {
-    gateManager.reject(req.params.runId, req.params.jobId, (req.body as any).reason);
-    res.json({ ok: true });
-  } catch (err) { res.status(404).json({ error: String(err) }); }
+  try { gateManager.reject(req.params.runId, req.params.jobId, (req.body as any).reason); res.json({ ok: true }); }
+  catch (err) { res.status(404).json({ error: String(err) }); }
 });
 
-// ─── Budget / AllScale ────────────────────────────────────────────────────────
-
-/** List jobs currently awaiting funding for a run. */
 router.get("/runs/:runId/budget/awaiting", (req, res) =>
   res.json(budgetTracker.listAwaiting(req.params.runId)),
 );
 
-/**
- * Called by the AllScale webhook handler in the Next.js app once payment is confirmed.
- * Resumes the halted job.
- */
 router.post("/runs/:runId/jobs/:jobId/fund", (req, res) => {
   try {
     const { amountUsd } = req.body as { amountUsd?: number };
@@ -89,16 +77,6 @@ router.post("/runs/:runId/jobs/:jobId/fund", (req, res) => {
   } catch (err) { res.status(400).json({ error: String(err) }); }
 });
 
-// ─── Meta-agent: YAML generation ─────────────────────────────────────────────
-
-/**
- * POST /api/generate-workflow
- * Body: { description: string }
- * Returns: { yaml: string, validated: boolean, validationError?: string }
- *
- * The meta-agent reads SKILLS.md and uses CLōD to produce a valid workflow YAML
- * from a plain-English description of the desired task.
- */
 router.post("/generate-workflow", async (req: Request, res: Response) => {
   try {
     const { description } = req.body as { description?: string };

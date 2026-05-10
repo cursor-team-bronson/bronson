@@ -9,7 +9,6 @@ export const JobConfigSchema = z.object({
   tools: z.array(z.string()).optional().default([]),
   on_failure: z.enum(["halt", "retry"]).default("halt"),
   max_retries: z.number().int().min(0).max(5).default(0),
-  /** Max USD spend allowed for this job. Halts and creates an AllScale checkout when exceeded. */
   budget_usd: z.number().positive().optional(),
 });
 
@@ -32,26 +31,39 @@ export interface JobState {
   startedAt?: string; completedAt?: string;
   output?: string; tokensUsed?: number; costUsd?: number;
   retryCount: number; error?: string;
-  /** AllScale checkout URL set when job is awaiting_funding */
   checkoutUrl?: string;
 }
 
+export interface SerializedDAGNode {
+  jobId: string;
+  dependencies: string[];
+  dependents: string[];
+}
+
+export interface SerializedDAG {
+  nodes: SerializedDAGNode[];
+  executionWaves: string[][];
+}
+
 export interface RunState {
-  runId: string; workflowName: string; status: RunStatus;
-  createdAt: string; completedAt?: string;
+  runId: string;
+  workflowName: string;
+  status: RunStatus;
+  createdAt: string;
+  completedAt?: string;
   jobs: Record<string, JobState>;
+  dag?: SerializedDAG;
 }
 
 export type EventType =
   | "RUN_STARTED" | "JOB_STARTED" | "JOB_COMPLETED" | "JOB_FAILED"
-  | "GATE_PENDING" | "GATE_APPROVED" | "GATE_REJECTED"
+  | "JOB_RETRY_WARNING" | "GATE_PENDING" | "GATE_APPROVED" | "GATE_REJECTED"
   | "BUDGET_EXCEEDED" | "BUDGET_FUNDED" | "JOB_RESUMED"
   | "RUN_COMPLETED" | "RUN_FAILED";
 
 export interface RunEvent {
   eventId: string; runId: string; jobId?: string;
   type: EventType; timestamp: string;
-  /** Monotonic per-run sequence for ordering and optimistic concurrency. */
   version: number;
   payload?: Record<string, unknown>;
 }

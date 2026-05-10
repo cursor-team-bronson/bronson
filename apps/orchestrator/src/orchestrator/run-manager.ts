@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from "uuid";
-import { WorkflowConfig, RunState, JobState } from "@bronson/types";
+import { WorkflowConfig, RunState, JobState, SerializedDAG } from "@bronson/types";
 import { resolveDAG } from "../parser/dag-resolver.js";
 import { eventLog, VersionMismatchError } from "../event-log/event-log.js";
 import { gateManager } from "../gates/gate-manager.js";
@@ -7,6 +7,10 @@ import { runAgent } from "../agent-runner/clod-client.js";
 import { budgetTracker, BudgetExceededError } from "./budget-tracker.js";
 
 const runs = new Map<string, RunState>();
+
+export const getRun = (runId: string) => runs.get(runId);
+export const getRunDag = (runId: string) => getRun(runId)?.dag;
+export const listRuns = () => [...runs.values()];
 
 function appendGateEvent(
   runId: string,
@@ -25,22 +29,20 @@ function appendGateEvent(
   }
 }
 
-export const getRun = (runId: string) => runs.get(runId);
-export const listRuns = () => [...runs.values()];
-
 export async function startRun(config: WorkflowConfig): Promise<RunState> {
   const runId = uuidv4();
   const dag = resolveDAG(config);
 
   const jobs: Record<string, JobState> = {};
-  for (const jobId of dag.nodes.keys()) jobs[jobId] = { jobId, status: "pending", retryCount: 0 };
+  for (const jobId of dag.nodes.keys()) {
+    jobs[jobId] = { jobId, status: "pending", retryCount: 0 };
+  }
 
-  // Register budgets for jobs that have one configured
   for (const [jobId, jobConfig] of Object.entries(config.jobs)) {
     if (jobConfig.budget_usd) budgetTracker.register(runId, jobId, jobConfig.budget_usd);
   }
 
-  const serializedDag = {
+  const serializedDag: SerializedDAG = {
     nodes: Array.from(dag.nodes.values()).map(n => ({
       jobId: n.jobId,
       dependencies: n.dependencies,
@@ -49,14 +51,14 @@ export async function startRun(config: WorkflowConfig): Promise<RunState> {
     executionWaves: dag.executionWaves,
   };
 
-  const run = {
+  const run: RunState = {
     runId,
     workflowName: config.name,
     status: "running",
     createdAt: new Date().toISOString(),
     jobs,
     dag: serializedDag,
-  } as RunState & { dag: typeof serializedDag };
+  };
 
   runs.set(runId, run);
   eventLog.append(runId, "RUN_STARTED", undefined, { workflowName: config.name });
@@ -69,7 +71,6 @@ export async function startRun(config: WorkflowConfig): Promise<RunState> {
   return run;
 }
 
-/** Resume a job that was halted waiting for funding. Called by the AllScale webhook handler. */
 export function topUpJobBudget(runId: string, jobId: string, amountUsd: number) {
   const run = runs.get(runId);
   if (!run) throw new Error(`Run ${runId} not found`);
@@ -97,9 +98,8 @@ async function executeRun(run: RunState, config: WorkflowConfig, waves: string[]
       return;
     }
   }
-  const failedJobIds = Object.values(run.jobs)
-    .filter(j => j.status === "failed")
-    .map(j => j.jobId);
+
+  const failedJobIds = Object.values(run.jobs).filter(j => j.status === "failed").map(j => j.jobId);
   if (failedJobIds.length > 0) {
     run.status = "failed";
     run.completedAt = new Date().toISOString();
@@ -109,6 +109,7 @@ async function executeRun(run: RunState, config: WorkflowConfig, waves: string[]
     });
     return;
   }
+
   run.status = "completed";
   run.completedAt = new Date().toISOString();
   eventLog.append(run.runId, "RUN_COMPLETED");
@@ -137,18 +138,21 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
         jobState.status = "gate_pending";
         run.status = "gate_pending";
         appendGateEvent(run.runId, "GATE_PENDING", jobId, { proposedOutput: result.output });
+
         const decision = await gateManager.waitForApproval({
           runId: run.runId,
           jobId,
           proposedOutput: result.output,
           context: Object.values(upstreamOutputs).join("\n\n"),
         });
+
         if (!decision.approved) {
           jobState.status = "failed";
           jobState.error = decision.reason ?? "Gate rejected";
           appendGateEvent(run.runId, "GATE_REJECTED", jobId, { reason: decision.reason });
           return;
         }
+
         if (decision.editedOutput) finalOutput = decision.editedOutput;
         jobState.status = "gate_approved";
         run.status = gateManager.listPending(run.runId).length > 0 ? "gate_pending" : "running";
@@ -176,10 +180,8 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
           checkoutUrl: err.checkoutUrl,
           intentId: err.intentId,
         });
-        // Suspend — resumes when topUpJobBudget() is called via the webhook
         await budgetTracker.waitForFunding(run.runId, jobId);
         eventLog.append(run.runId, "JOB_RESUMED", jobId);
-        // Retry from start of this attempt after funding
         attempt--;
         continue;
       }
@@ -187,7 +189,7 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
       jobState.retryCount = attempt;
       if (attempt < maxAttempts) {
         const delayMs = 500 * Math.pow(2, attempt - 1);
-        eventLog.append(run.runId, "JOB_RETRY_WARNING" as any, jobId, {
+        eventLog.append(run.runId, "JOB_RETRY_WARNING", jobId, {
           attempt,
           maxAttempts,
           reason: String(err),
