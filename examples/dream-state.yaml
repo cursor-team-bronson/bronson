@@ -12,10 +12,10 @@
 #
 # Prerequisites (apps/orchestrator/.env):
 #   ALLOW_SHELL_TOOL=true
-#   TOOL_SHELL_CWD=<absolute path to your project root>
+#   TOOL_SHELL_CWD=<absolute path to the Bronson REPOSITORY ROOT>
+#     (the folder that contains README.md, apps/, packages/ — NOT examples/essay-workspace alone).
 #   TOOL_SHELL_ALLOWLIST_REGEX=.*
-#   emit_artifacts uses shell + Node stdin only (no workspace_write). If you set
-#   ALLOW_WORKSPACE_WRITE=false globally, dream-state still runs.
+#   emit_artifacts uses workspace_write (requires ALLOW_WORKSPACE_WRITE unset or true when shell is on).
 #
 # Shell runs with the host default shell (often cmd.exe on Windows). If Unix utilities fail, use
 # PowerShell one-liners (see scan prompts). Reload the web “dream-state” preset after edits; stale YAML
@@ -33,6 +33,9 @@ jobs:
   scan_memory:
     prompt: |
       You are reading the existing project memory store for this software repository (e.g. Bronson).
+
+      If the shell cwd appears to be only examples/essay-workspace (or any single example folder), output one line:
+      WARNING_WRONG_CWD — set TOOL_SHELL_CWD to the repo root (parent of apps/), then still try reads below.
 
       Use the shell tool. Try POSIX-style reads first; if the host is Windows and commands fail,
       use PowerShell equivalents:
@@ -80,6 +83,9 @@ jobs:
   scan_project_docs:
     prompt: |
       You are collecting project documentation and directory context for this repo.
+
+      If listing shows only essay-workspace or a narrow examples subtree, output WARNING_WRONG_CWD first —
+      TOOL_SHELL_CWD should be the monorepo root containing README.md and apps/.
 
       Use the shell tool. Prefer POSIX; on Windows if ls/find/cat fail, use PowerShell:
 
@@ -253,10 +259,14 @@ jobs:
 
       For capability_build, include YAML comments showing how automation could POST this workflow to the
       orchestrator (POST /api/runs with JSON body containing the workflow YAML) and mention the web UI
-      UI schedule preference key bronson.workflowSchedule.v1 for runners that POST on a cadence.
+      schedule preference key bronson.workflowSchedule.v1 for runners that POST on a cadence.
+
+      Do NOT end after one introductory sentence. The bulk of your reply MUST be the two marker blocks with
+      real YAML bodies (at least name, jobs, and one job each). Prose before markers should be under 80 words.
     depends_on: [consolidate]
     gate: auto
     on_failure: retry
+    max_retries: 2
     context_budget: 14000
     model: DeepSeek V4 Pro
 
@@ -264,16 +274,8 @@ jobs:
 
   emit_artifacts:
     prompt: |
-      You only have the shell tool (no workspace_write). Write UTF-8 files under TOOL_SHELL_CWD using Node.js.
-      Pass large bodies via the shell tool stdin field — never inline megabytes in the command string.
-
-      Writer pattern (repeat per file, change OUT path and stdin body):
-
-        command:
-          node -e "const fs=require('fs');const p=require('path');const out='REL_PATH';fs.mkdirSync(p.dirname(out),{recursive:true});let b='';process.stdin.on('data',d=>b+=d);process.stdin.on('end',()=>fs.writeFileSync(out,b));"
-        stdin: <exact bytes for that file>
-
-      Use forward slashes in REL_PATH (e.g. .dream/memory-output.md, .dream/proposed/memory-hygiene.yaml).
+      Use the workspace_write tool only (no shell). Each call: path = relative under TOOL_SHELL_CWD,
+      content = full UTF-8 file body. Parent directories are created automatically.
 
       Context contains:
         - consolidate → canonical Markdown memory (full body)
@@ -283,23 +285,23 @@ jobs:
       Never modify CLAUDE.md, .cursor/memory.md, or existing memory sources.
 
       Steps:
-        1) Write .dream/memory-output.md — stdin = consolidate Markdown only.
+        1) workspace_write path .dream/memory-output.md — exact consolidate Markdown only.
 
-        2) Parse draft_agent_workflows; extract raw YAML between MEMORY_HYGIENE markers (if present).
-           Write .dream/proposed/memory-hygiene.yaml via stdin.
+        2) From draft_agent_workflows text, extract YAML between MEMORY_HYGIENE markers (if present).
+           workspace_write path .dream/proposed/memory-hygiene.yaml
 
-        3) Extract YAML between CAPABILITY markers; write .dream/proposed/capability-build.yaml.
+        3) Extract YAML between CAPABILITY markers; workspace_write path .dream/proposed/capability-build.yaml
 
-        4) Write .dream/proposed/README.md (8–12 lines): what each artifact is, how to POST /api/runs,
-           optional scheduling via bronson.workflowSchedule.v1 in the web UI, promote from examples/.
+        4) workspace_write path .dream/proposed/README.md (8–12 lines): artifacts, POST /api/runs,
+           bronson.workflowSchedule.v1, promote from examples/.
 
-      If markers are missing, write .dream/proposed/draft-raw.txt with the full draft_agent_workflows text.
+      If markers are missing, workspace_write .dream/proposed/draft-raw.txt with full draft_agent_workflows text.
 
       End your final assistant message with exactly:
         DREAM COMPLETE — artifacts under .dream/
     depends_on: [consolidate, draft_agent_workflows]
-    tools: [shell]
-    tool_rounds_max: 28
+    tools: [workspace_write]
+    tool_rounds_max: 16
     gate: auto
     on_failure: retry
     context_budget: 16000
