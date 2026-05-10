@@ -8,7 +8,9 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   essayWorkflowYaml,
+  LAST_MODEL_RUN_ID_STORAGE_KEY,
   parseDag,
+  readStoredWorkflowYaml,
   starterYaml,
   toOrchestratorWorkflowYaml,
   WORKFLOW_YAML_STORAGE_KEY,
@@ -237,7 +239,7 @@ function ModelRunnerStepCard({
 }
 
 export default function RunPage() {
-  const [yamlText, setYamlText] = useState(starterYaml);
+  const [yamlText, setYamlText] = useState(() => readStoredWorkflowYaml());
   const [statusByStep, setStatusByStep] = useState<Record<string, StepStatus>>({});
   const [isRunning, setIsRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
@@ -250,6 +252,8 @@ export default function RunPage() {
   const [nowMs, setNowMs] = useState(() => Date.now());
   const abortRef = useRef(false);
   const eventSourceRef = useRef<EventSource | null>(null);
+  /** Skip clearing job details on the first `yamlText` effect so we can merge a persisted last run. */
+  const skipYamlResetOnceRef = useRef(true);
 
   const loadFromStorage = useCallback(() => {
     try {
@@ -271,10 +275,6 @@ export default function RunPage() {
   }, []);
 
   useEffect(() => {
-    loadFromStorage();
-  }, [loadFromStorage]);
-
-  useEffect(() => {
     const onVis = () => {
       if (document.visibilityState === "visible") loadFromStorage();
     };
@@ -288,11 +288,24 @@ export default function RunPage() {
   const order = graph.topoOrder.length > 0 ? graph.topoOrder : graph.nodes;
 
   useEffect(() => {
+    const g = parseDag(yamlText);
     const next: Record<string, StepStatus> = {};
-    for (const id of graph.nodes) next[id] = "idle";
+    for (const id of g.nodes) next[id] = "idle";
     setStatusByStep(next);
+    if (skipYamlResetOnceRef.current) {
+      skipYamlResetOnceRef.current = false;
+      return;
+    }
     setJobDetails({});
-  }, [yamlText, graph.nodes]);
+    setActiveRunId(null);
+    setActiveRunStatus(null);
+    setJobErrors({});
+    try {
+      localStorage.removeItem(LAST_MODEL_RUN_ID_STORAGE_KEY);
+    } catch {
+      /* ignore */
+    }
+  }, [yamlText]);
 
   useEffect(() => {
     if (!isRunning) return;
@@ -300,11 +313,12 @@ export default function RunPage() {
     return () => window.clearInterval(id);
   }, [isRunning]);
 
-  const fetchAndApplyRunState = useCallback(async (rid: string) => {
+  const fetchAndApplyRunState = useCallback(async (rid: string): Promise<boolean> => {
     try {
       const res = await fetch(`/api/runs/${rid}`);
-      if (!res.ok) return;
+      if (!res.ok) return false;
       const runState = (await res.json()) as RunState;
+      setActiveRunId(rid);
       setActiveRunStatus(runState.status);
       setJobErrors(jobErrorsFromRun(runState));
       setJobDetails({ ...runState.jobs });
@@ -320,10 +334,37 @@ export default function RunPage() {
         eventSourceRef.current?.close();
         eventSourceRef.current = null;
       }
+      return true;
     } catch {
-      /* ignore */
+      return false;
     }
   }, []);
+
+  /** After reload: pull last run from API (orchestrator hydrates from Supabase when in-memory map is empty). */
+  useEffect(() => {
+    let cancelled = false;
+    let rid = "";
+    try {
+      rid = localStorage.getItem(LAST_MODEL_RUN_ID_STORAGE_KEY)?.trim() ?? "";
+    } catch {
+      return;
+    }
+    if (!rid) return;
+    void (async () => {
+      const ok = await fetchAndApplyRunState(rid);
+      if (cancelled) return;
+      if (!ok) {
+        try {
+          localStorage.removeItem(LAST_MODEL_RUN_ID_STORAGE_KEY);
+        } catch {
+          /* ignore */
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchAndApplyRunState]);
 
   const stopStep = useCallback(
     async (stepId: string) => {
@@ -365,12 +406,22 @@ export default function RunPage() {
     for (const id of graph.nodes) idle[id] = "idle";
     setStatusByStep(idle);
 
+    let resumeRunId: string | undefined;
+    try {
+      const s = localStorage.getItem(LAST_MODEL_RUN_ID_STORAGE_KEY)?.trim();
+      if (s) resumeRunId = s;
+    } catch {
+      /* ignore */
+    }
+
     let runId: string;
     try {
       const res = await fetch("/api/runs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ yaml: converted.yaml }),
+        body: JSON.stringify(
+          resumeRunId ? { yaml: converted.yaml, resumeRunId } : { yaml: converted.yaml },
+        ),
       });
       if (!res.ok) {
         const errBody = (await res.json().catch(() => ({}))) as { error?: string };
@@ -382,6 +433,11 @@ export default function RunPage() {
       setActiveRunStatus(started.status);
       setJobErrors(jobErrorsFromRun(started));
       setJobDetails({ ...started.jobs });
+      try {
+        localStorage.setItem(LAST_MODEL_RUN_ID_STORAGE_KEY, runId);
+      } catch {
+        /* ignore */
+      }
     } catch (e) {
       setIsRunning(false);
       setActiveRunId(null);
@@ -419,6 +475,7 @@ export default function RunPage() {
           evt.type === "GATE_PENDING" ||
           evt.type === "GATE_APPROVED" ||
           evt.type === "GATE_REJECTED" ||
+          evt.type === "RUN_RESUMED" ||
           evt.type === "RUN_COMPLETED" ||
           evt.type === "RUN_FAILED"
         ) {

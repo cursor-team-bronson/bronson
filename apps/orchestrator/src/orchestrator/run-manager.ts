@@ -4,7 +4,7 @@ import { resolveDAG } from "../parser/dag-resolver.js";
 import { eventLog, VersionMismatchError } from "../event-log/event-log.js";
 import { gateManager } from "../gates/gate-manager.js";
 import { runAgent } from "../agent-runner/clod-client.js";
-import { parseWorkflowString } from "../parser/yaml-parser.js";
+import { normalizeWorkflowYamlInput, parseWorkflowString } from "../parser/yaml-parser.js";
 import {
   buildRunStateFromPersistence,
   fetchJobRows,
@@ -18,6 +18,35 @@ import {
 import { attachJobAbort, detachJobAbort } from "./job-abort-registry.js";
 
 const runs = new Map<string, RunState>();
+
+/** In-flight DAG execution per run (avoids overlapping resume/start on the same run id). */
+const runExecutionPromises = new Map<string, Promise<void>>();
+
+function trackRunExecution(runId: string, p: Promise<void>): void {
+  runExecutionPromises.set(runId, p);
+  void p.finally(() => {
+    if (runExecutionPromises.get(runId) === p) runExecutionPromises.delete(runId);
+  });
+}
+
+function canonicalWorkflowYamlForCompare(raw: string): string {
+  return normalizeWorkflowYamlInput(raw).replace(/\r\n/g, "\n").trim();
+}
+
+function normalizeJobsForResume(run: RunState): void {
+  for (const j of Object.values(run.jobs)) {
+    if (j.status === "running" || j.status === "gate_approved" || j.status === "gate_pending") {
+      j.status = "pending";
+      j.retryCount = 0;
+      delete j.startedAt;
+      delete j.completedAt;
+      delete j.output;
+      delete j.tokensUsed;
+      delete j.costUsd;
+      delete j.error;
+    }
+  }
+}
 
 export const getRun = (runId: string) => runs.get(runId);
 export const getRunDag = (runId: string) => getRun(runId)?.dag;
@@ -33,6 +62,13 @@ export async function hydrateRunFromDb(runId: string): Promise<RunState | null> 
   const { run } = buildRunStateFromPersistence(runId, snap, rows);
   runs.set(runId, run);
   return run;
+}
+
+/** In-memory run if present, otherwise load from Supabase (for GET /api/runs/:id after reload). */
+export async function ensureRunLoaded(runId: string): Promise<RunState | null> {
+  const existing = getRun(runId);
+  if (existing) return existing;
+  return hydrateRunFromDb(runId);
 }
 
 async function committedJobOutput(runId: string, jobId: string): Promise<string | undefined> {
@@ -90,11 +126,70 @@ export async function startRun(config: WorkflowConfig, workflowYamlSnapshot: str
 
   eventLog.append(runId, "RUN_STARTED", undefined, { workflowName: config.name });
 
-  executeRun(run, config, dag.executionWaves).catch((err) => {
+  const p = executeRun(run, config, dag.executionWaves).catch((err) => {
     run.status = "failed";
     eventLog.append(runId, "RUN_FAILED", undefined, { error: String(err) });
     void persistRunStatus(runId, "failed");
   });
+  trackRunExecution(runId, p);
+
+  return run;
+}
+
+/**
+ * Continue an existing persisted run from the first still-actionable jobs (skips completed/skipped/failed).
+ * Returns null if persistence is off, snapshot/YAML mismatch, run is fully done, or only failed jobs remain.
+ */
+export async function tryResumeRun(
+  resumeRunId: string,
+  config: WorkflowConfig,
+  workflowYamlSnapshot: string,
+): Promise<RunState | null> {
+  const rid = resumeRunId.trim();
+  if (!rid) return null;
+  if (!isJobPersistenceEnabled()) return null;
+
+  if (runExecutionPromises.has(rid)) {
+    const inFlight = getRun(rid);
+    if (inFlight) return inFlight;
+  }
+
+  const snap = await fetchRunSnapshot(rid);
+  if (!snap) return null;
+  if (canonicalWorkflowYamlForCompare(snap.workflow_yaml) !== canonicalWorkflowYamlForCompare(workflowYamlSnapshot)) {
+    return null;
+  }
+
+  let run = getRun(rid);
+  if (!run) run = (await hydrateRunFromDb(rid)) ?? undefined;
+  if (!run) return null;
+
+  const allDone = Object.values(run.jobs).every((j) => j.status === "completed" || j.status === "skipped");
+  if (allDone) return null;
+
+  const hasIncomplete = Object.values(run.jobs).some(
+    (j) =>
+      j.status === "pending" ||
+      j.status === "running" ||
+      j.status === "gate_pending" ||
+      j.status === "gate_approved",
+  );
+  if (!hasIncomplete) return null;
+
+  normalizeJobsForResume(run);
+  run.status = "running";
+  delete run.completedAt;
+  void persistRunStatus(rid, "running");
+  await persistRunStart(rid, config.name, workflowYamlSnapshot);
+  eventLog.append(rid, "RUN_RESUMED", undefined, { workflowName: config.name });
+
+  const dag = resolveDAG(config);
+  const p = resumeExecuteRun(run, config, dag.executionWaves).catch((err) => {
+    run.status = "failed";
+    eventLog.append(rid, "RUN_FAILED", undefined, { error: String(err) });
+    void persistRunStatus(rid, "failed");
+  });
+  trackRunExecution(rid, p);
 
   return run;
 }
@@ -126,6 +221,30 @@ async function executeRun(run: RunState, config: WorkflowConfig, waves: string[]
   for (const wave of waves) {
     await Promise.all(wave.map((jobId) => executeJob(run, config, jobId)));
     if (wave.some((jobId) => run.jobs[jobId].status === "failed" && config.jobs[jobId].on_failure === "halt")) {
+      run.status = "failed";
+      run.completedAt = new Date().toISOString();
+      eventLog.append(run.runId, "RUN_FAILED", undefined, { reason: "Job failed with on_failure: halt" });
+      void persistRunStatus(run.runId, "failed");
+      return;
+    }
+  }
+
+  applyRunTerminalState(run, config);
+}
+
+/** Like {@link executeRun}, but skips jobs already completed, skipped, or failed (failed are left as-is). */
+async function resumeExecuteRun(run: RunState, config: WorkflowConfig, waves: string[][]): Promise<void> {
+  for (const wave of waves) {
+    await Promise.all(
+      wave.map(async (jobId) => {
+        const jobState = run.jobs[jobId];
+        if (!jobState) return;
+        const st = jobState.status;
+        if (st === "completed" || st === "skipped" || st === "failed") return;
+        await executeJob(run, config, jobId);
+      }),
+    );
+    if (wave.some((jobId) => run.jobs[jobId].status === "failed" && config.jobs[jobId]?.on_failure === "halt")) {
       run.status = "failed";
       run.completedAt = new Date().toISOString();
       eventLog.append(run.runId, "RUN_FAILED", undefined, { reason: "Job failed with on_failure: halt" });
@@ -252,7 +371,7 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
           jobState.completedAt = new Date().toISOString();
           jobState.error = decision.reason ?? "Gate rejected";
           appendGateEvent(run.runId, "GATE_REJECTED", jobId, { reason: decision.reason });
-          void persistJobRow(run.runId, { ...jobState });
+          await persistJobRow(run.runId, { ...jobState });
           return;
         }
 
@@ -273,7 +392,7 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
         tokensUsed: result.tokensUsed,
         costUsd: result.costUsd,
       });
-      void persistJobRow(run.runId, { ...jobState });
+      await persistJobRow(run.runId, { ...jobState });
       return;
     } catch (err) {
       const msg = String(err);
@@ -283,7 +402,7 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
         jobState.completedAt = new Date().toISOString();
         jobState.error = "Stopped by user";
         eventLog.append(run.runId, "JOB_FAILED", jobId, { error: jobState.error });
-        void persistJobRow(run.runId, { ...jobState });
+        await persistJobRow(run.runId, { ...jobState });
         return;
       }
       jobState.retryCount = attempt;
@@ -303,7 +422,7 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
         jobState.completedAt = new Date().toISOString();
         jobState.error = msg;
         eventLog.append(run.runId, "JOB_FAILED", jobId, { error: msg });
-        void persistJobRow(run.runId, { ...jobState });
+        await persistJobRow(run.runId, { ...jobState });
       }
     } finally {
       detachJobAbort(run.runId, jobId);

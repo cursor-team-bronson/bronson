@@ -5,6 +5,17 @@ import { parseWorkflowString } from "../parser/yaml-parser.js";
 
 let client: SupabaseClient | null | undefined;
 
+/** Extra context when PostgREST returns Postgres privilege errors. */
+function formatPersistError(message: string): string {
+  if (/permission denied for table/i.test(message)) {
+    return (
+      `${message} ` +
+      "(These tables are granted only to `service_role`. Use the **service role** key from Supabase Dashboard → Settings → API, not the anon/publishable key. If the project is new, apply repo migration `20260510120000_bronson_orchestrator_job_persistence.sql`.)"
+    );
+  }
+  return message;
+}
+
 function getClient(): SupabaseClient | null {
   if (client !== undefined) return client;
   const url = process.env.SUPABASE_URL?.trim() || process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
@@ -42,7 +53,7 @@ export async function persistRunStart(
     },
     { onConflict: "run_id" },
   );
-  if (error) throw new Error(`Failed to persist run snapshot: ${error.message}`);
+  if (error) throw new Error(`Failed to persist run snapshot: ${formatPersistError(error.message)}`);
 }
 
 export async function persistRunStatus(runId: string, status: RunStatus): Promise<void> {
@@ -102,7 +113,10 @@ export async function persistJobRow(
     },
     { onConflict: "run_id,job_id" },
   );
-  if (error) console.error("[bronson] persistJobRow:", job.jobId, error.message);
+  if (error) {
+    console.error("[bronson] persistJobRow:", job.jobId, error.message);
+    throw new Error(`Failed to persist job ${job.jobId}: ${formatPersistError(error.message)}`);
+  }
 }
 
 /** Completed-job text for upstream context (deps), after restart or from another worker. */

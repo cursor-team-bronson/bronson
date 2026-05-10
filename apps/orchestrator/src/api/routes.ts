@@ -1,6 +1,12 @@
 import { Router, Request, Response } from "express";
 import { normalizeWorkflowYamlInput, parseWorkflowString } from "../parser/yaml-parser.js";
-import { startRun, getRun, listRuns, retryJobAndContinue } from "../orchestrator/run-manager.js";
+import {
+  startRun,
+  listRuns,
+  retryJobAndContinue,
+  ensureRunLoaded,
+  tryResumeRun,
+} from "../orchestrator/run-manager.js";
 import { stopJobRequest } from "../orchestrator/job-abort-registry.js";
 import { gateManager } from "../gates/gate-manager.js";
 import { eventLog } from "../event-log/event-log.js";
@@ -10,12 +16,23 @@ export const router = Router();
 
 router.post("/runs", async (req: Request, res: Response) => {
   try {
-    const yamlStr = normalizeWorkflowYamlInput((req.body as { yaml?: unknown }).yaml);
+    const body = req.body as { yaml?: unknown; resumeRunId?: unknown };
+    const yamlStr = normalizeWorkflowYamlInput(body.yaml);
     if (!yamlStr.trim()) {
       res.status(400).json({ error: "yaml field required" });
       return;
     }
-    res.status(201).json(await startRun(parseWorkflowString(yamlStr), yamlStr));
+    const parsed = parseWorkflowString(yamlStr);
+    const resumeRaw = body.resumeRunId;
+    const resumeRunId = typeof resumeRaw === "string" ? resumeRaw.trim() : "";
+    if (resumeRunId) {
+      const resumed = await tryResumeRun(resumeRunId, parsed, yamlStr);
+      if (resumed) {
+        res.status(200).json(resumed);
+        return;
+      }
+    }
+    res.status(201).json(await startRun(parsed, yamlStr));
   } catch (err) { res.status(400).json({ error: String(err) }); }
 });
 
@@ -34,8 +51,8 @@ router.post("/runs/:runId/jobs/:jobId/retry", async (req, res) => {
 });
 
 /** Abort the in-flight LLM HTTP request for this job (if the job is currently calling the model). */
-router.post("/runs/:runId/jobs/:jobId/stop", (req, res) => {
-  const run = getRun(req.params.runId);
+router.post("/runs/:runId/jobs/:jobId/stop", async (req, res) => {
+  const run = (await ensureRunLoaded(req.params.runId)) ?? undefined;
   if (!run) {
     res.status(404).json({ error: "Run not found" });
     return;
@@ -48,29 +65,44 @@ router.post("/runs/:runId/jobs/:jobId/stop", (req, res) => {
   res.json({ ok: true, aborted });
 });
 
-router.get("/runs/:runId", (req, res) => {
-  const run = getRun(req.params.runId);
-  if (!run) { res.status(404).json({ error: "Run not found" }); return; }
+router.get("/runs/:runId", async (req, res) => {
+  const run = (await ensureRunLoaded(req.params.runId)) ?? undefined;
+  if (!run) {
+    res.status(404).json({ error: "Run not found" });
+    return;
+  }
   res.json(run);
 });
 
 // Dedicated DAG endpoint for frontend (same payload as `RunState.dag`)
-router.get("/runs/:runId/dag", (req, res) => {
-  const run = getRun(req.params.runId);
-  if (!run) { res.status(404).json({ error: "Run not found" }); return; }
-  if (!run.dag) { res.status(404).json({ error: "DAG not found for this run" }); return; }
+router.get("/runs/:runId/dag", async (req, res) => {
+  const run = (await ensureRunLoaded(req.params.runId)) ?? undefined;
+  if (!run) {
+    res.status(404).json({ error: "Run not found" });
+    return;
+  }
+  if (!run.dag) {
+    res.status(404).json({ error: "DAG not found for this run" });
+    return;
+  }
   res.json(run.dag);
 });
 
-router.get("/runs/:runId/events", (req, res) => {
-  const run = getRun(req.params.runId);
-  if (!run) { res.status(404).json({ error: "Run not found" }); return; }
+router.get("/runs/:runId/events", async (req, res) => {
+  const run = (await ensureRunLoaded(req.params.runId)) ?? undefined;
+  if (!run) {
+    res.status(404).json({ error: "Run not found" });
+    return;
+  }
   streamRunEvents(res, req.params.runId);
 });
 
-router.get("/runs/:runId/events/history", (req, res) => {
-  const run = getRun(req.params.runId);
-  if (!run) { res.status(404).json({ error: "Run not found" }); return; }
+router.get("/runs/:runId/events/history", async (req, res) => {
+  const run = (await ensureRunLoaded(req.params.runId)) ?? undefined;
+  if (!run) {
+    res.status(404).json({ error: "Run not found" });
+    return;
+  }
   res.json(eventLog.getEventsForRun(req.params.runId));
 });
 

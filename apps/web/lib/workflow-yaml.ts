@@ -2,6 +2,19 @@ import yaml from "js-yaml";
 
 export const WORKFLOW_YAML_STORAGE_KEY = "bronson.workflowYaml.v1";
 
+/** Last orchestrator run id — used to refetch job outputs after reload when persistence is on. */
+export const LAST_MODEL_RUN_ID_STORAGE_KEY = "bronson.modelRunner.lastRunId.v1";
+
+export function readStoredWorkflowYaml(): string {
+  try {
+    const s = localStorage.getItem(WORKFLOW_YAML_STORAGE_KEY);
+    if (s?.trim()) return s;
+  } catch {
+    /* ignore */
+  }
+  return starterYaml;
+}
+
 export const starterYaml = `name: fan-out-agents-workflow
 steps:
   - id: plan-task
