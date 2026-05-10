@@ -1,0 +1,29 @@
+name: pr-review-pipeline
+jobs:
+  analyze:
+    prompt: |
+      You are a senior engineer reviewing a pull request diff.
+      Analyze the provided diff and produce a structured list of issues:
+      bugs, security concerns, performance problems, and style violations.
+    model: deepseek-v3
+    context_budget: 3000
+  suggest:
+    depends_on: [analyze]
+    prompt: |
+      Based on the analysis, propose concrete code fixes for each issue.
+      Format: numbered list with issue + fix + code snippet.
+    model: deepseek-v3
+    context_budget: 2000
+  human_review:
+    depends_on: [suggest]
+    gate: human
+    prompt: Review proposed changes before applying. Approve as-is or edit inline.
+    model: deepseek-v3
+    context_budget: 1500
+  apply:
+    depends_on: [human_review]
+    prompt: Apply approved changes and write a git commit message.
+    model: deepseek-v3
+    context_budget: 2000
+    on_failure: retry
+    max_retries: 2
