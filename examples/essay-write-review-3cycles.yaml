@@ -16,6 +16,10 @@
 # Writers use tools: [workspace_write] so file contents are passed as tool JSON (no shell quoting).
 # Reviewers only see prior jobs' LLM outputs (context), not the disk file automatically.
 #
+# Models below are per-job for multi-model testing; strings must match your CLōD project catalog exactly.
+# (DeepSeek V3.2 → write 1, Gemma 3N → review 1, DeepSeek V3.2 → write 2, Llama 3.3 Turbo → review 2,
+# DeepSeek V4 Pro → write 3, Meta Llama 3.3 70B → final review.)
+#
 # Edit C:\Users\julie\bronson\examples\essay-workspace if you want a different folder;
 # keep TOOL_SHELL_CWD in sync.
 
@@ -23,6 +27,7 @@ name: essay-write-review-3cycles
 
 jobs:
   write_cycle_1:
+    model: DeepSeek V3.2
     prompt: |
       You are the WRITER (cycle 1 of 3).
 
@@ -46,6 +51,7 @@ jobs:
     context_budget: 12000
 
   review_cycle_1:
+    model: Gemma 3N E4B IT
     prompt: |
       You are the REVIEWER (after cycle 1).
 
@@ -65,9 +71,11 @@ jobs:
     depends_on: [write_cycle_1]
     gate: auto
     on_failure: retry
-    context_budget: 12000
+    # Gemma 3N has a 32k context window — keep upstream injection moderate.
+    context_budget: 8000
 
   write_cycle_2:
+    model: DeepSeek V3.2
     prompt: |
       You are the WRITER (cycle 2 of 3).
 
@@ -88,6 +96,7 @@ jobs:
     context_budget: 12000
 
   review_cycle_2:
+    model: Llama 3.3 70B Instruct Turbo
     prompt: |
       You are the REVIEWER (after cycle 2).
 
@@ -106,6 +115,7 @@ jobs:
     context_budget: 12000
 
   write_cycle_3:
+    model: DeepSeek V4 Pro
     prompt: |
       You are the WRITER (cycle 3 of 3 — final revision).
 
@@ -123,6 +133,7 @@ jobs:
     context_budget: 12000
 
   review_cycle_3:
+    model: Meta Llama 3.3 70B Instruct
     prompt: |
       You are the REVIEWER (final pass).
 

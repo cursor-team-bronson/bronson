@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { JobStatus, RunState, RunStatus } from "@bronson/types";
 import { Button } from "@/components/ui/button";
 import {
+  dreamStateWorkflowYaml,
   essayWorkflowYaml,
   parseDag,
   starterYaml,
@@ -22,6 +23,7 @@ function mapJobStatus(s: JobStatus): StepStatus {
     case "running":
     case "gate_pending":
     case "gate_approved":
+    case "awaiting_funding":
       return "running";
     case "skipped":
     case "pending":
@@ -102,6 +104,16 @@ export default function RunPage() {
     setRunError(null);
     try {
       localStorage.setItem(WORKFLOW_YAML_STORAGE_KEY, essayWorkflowYaml);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const loadDreamPreset = useCallback(() => {
+    setYamlText(dreamStateWorkflowYaml);
+    setRunError(null);
+    try {
+      localStorage.setItem(WORKFLOW_YAML_STORAGE_KEY, dreamStateWorkflowYaml);
     } catch {
       /* ignore */
     }
@@ -276,6 +288,9 @@ export default function RunPage() {
         <div className="flex flex-wrap items-center gap-2">
           <Button type="button" variant="secondary" size="sm" onClick={loadEssayPreset} disabled={isRunning}>
             Load essay test (3 cycles)
+          </Button>
+          <Button type="button" variant="secondary" size="sm" onClick={loadDreamPreset} disabled={isRunning}>
+            Load dream-state
           </Button>
           <Button type="button" variant="outline" size="sm" onClick={loadFromStorage} disabled={isRunning}>
             Reload from editor

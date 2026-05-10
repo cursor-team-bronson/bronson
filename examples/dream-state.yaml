@@ -1,0 +1,269 @@
+# dream-state — async memory consolidation & self-improvement (no human gate)
+#
+# Runs after you finish working: scans memory + git + docs, reconciles into one canonical
+# memory doc, drafts NEW Bronson workflows the repo could run later to keep improving —
+# all non-destructive (never overwrites CLAUDE.md / source memory by default).
+#
+# Ontology:
+#   Memory store   → CLAUDE.md / .cursor/memory.md (read-only input for this DAG)
+#   Session signal → git log / diffs / commits
+#   Dream job      → this DAG (async, autonomous)
+#   Output store   → .dream/memory-output.md + .dream/proposed/*.yaml (promote manually)
+#
+# Prerequisites (apps/orchestrator/.env):
+#   ALLOW_SHELL_TOOL=true
+#   TOOL_SHELL_CWD=<absolute path to your project root>
+#   TOOL_SHELL_ALLOWLIST_REGEX=.*
+#
+# Shell scan jobs use Unix-style commands; on Windows prefer Git Bash/WSL or edit prompts to PowerShell.
+# Models must match your CLōD catalog ids exactly. Scan/emit jobs use DeepSeek V3.2 (same tier as analyze);
+# if that alias is unavailable, change each model: field or set DEFAULT_AGENT_MODEL and omit model per job.
+
+name: dream-state
+
+jobs:
+  # ─── Wave 0: orient (parallel) ─────────────────────────────────────────────
+
+  scan_memory:
+    prompt: |
+      You are reading the existing project memory store.
+
+      Use the shell tool to read the project's memory files. Try each command
+      in order and stop once you get meaningful content:
+
+        cat CLAUDE.md
+        cat .cursor/memory.md
+        cat .ai/memory.md
+
+      If none exist, run:
+        find . -maxdepth 3 -name "*.md" -not -path "*/node_modules/*" \
+               -not -path "*/.git/*" | head -20
+
+      Collect everything you find and output it verbatim, labeled by filename.
+      If absolutely nothing exists, output exactly: NO_MEMORY_FOUND
+    tools: [shell]
+    tool_rounds_max: 8
+    gate: auto
+    on_failure: retry
+    context_budget: 6000
+    model: DeepSeek V3.2
+
+  scan_git_history:
+    prompt: |
+      You are mining recent git history for project insights.
+
+      Use the shell tool to run these three commands and collect their output:
+
+        git log --oneline --no-merges -50
+        git diff HEAD~10..HEAD --stat
+        git log --format="%s%n%b" --no-merges -20
+
+      Output the raw results verbatim, clearly labeled per command.
+      If git is unavailable or the repo has fewer commits than requested,
+      output whatever is returned and note the limitation.
+      If git is entirely absent, output: NO_GIT_HISTORY
+    tools: [shell]
+    tool_rounds_max: 8
+    gate: auto
+    on_failure: retry
+    context_budget: 6000
+    model: DeepSeek V3.2
+
+  scan_project_docs:
+    prompt: |
+      You are collecting project documentation and directory context.
+
+      Use the shell tool to gather structural context in order:
+
+        ls -la
+        find . -maxdepth 3 -name "*.md" -not -path "*/node_modules/*" \
+               -not -path "*/.git/*"
+        cat README.md
+        find docs -maxdepth 2 -name "*.md" 2>/dev/null | xargs cat 2>/dev/null || true
+
+      Output all results verbatim, labeled by command.
+      Skip any file that does not exist without erroring.
+    tools: [shell]
+    tool_rounds_max: 8
+    gate: auto
+    on_failure: retry
+    context_budget: 6000
+    model: DeepSeek V3.2
+
+  # ─── Wave 1: analyze (parallel) ───────────────────────────────────────────
+
+  analyze_code_structure:
+    prompt: |
+      You are analyzing the CODE STRUCTURE knowledge plane for Dream consolidation.
+
+      Using the git history and project docs injected as context, extract:
+        1. Active modules, packages, and their responsibilities
+        2. Key data flows and entry points identified from commit messages
+        3. Recent structural changes: renames, additions, deletions
+        4. Patterns or architectural conventions visible from the git log
+
+      Format your output as a concise structured list of facts.
+      Tag each fact [HIGH] or [LOW]. Omit speculation. Target ≤ 400 words.
+    depends_on: [scan_git_history, scan_project_docs]
+    gate: auto
+    on_failure: retry
+    context_budget: 8000
+    model: DeepSeek V3.2
+
+  analyze_product_intent:
+    prompt: |
+      You are analyzing the PRODUCT INTENT knowledge plane.
+
+      Using the existing memory store and project docs injected as context, extract:
+        1. What the project is (one sentence)
+        2. Who it is for and the core use case
+        3. Non-negotiable constraints or design principles
+        4. Explicit goals mentioned in README or memory files
+        5. Known limitations or anti-goals explicitly stated
+
+      Format your output as a concise structured list of facts.
+      Tag each fact [HIGH] or [LOW]. Target ≤ 400 words.
+    depends_on: [scan_memory, scan_project_docs]
+    gate: auto
+    on_failure: retry
+    context_budget: 8000
+    model: DeepSeek V3.2
+
+  analyze_conventions:
+    prompt: |
+      You are analyzing the OPERATIONAL CONVENTIONS knowledge plane.
+
+      Using the existing memory and git history injected as context, extract:
+        1. Coding conventions and style rules
+        2. Test patterns and coverage expectations
+        3. Build, run, and deployment instructions that work
+        4. Frequently used tools, scripts, CLI commands
+        5. Explicit "never do X" / "always do Y" rules
+
+      Tag each fact [HIGH] or [LOW]. Flag contradictions with ⚠. Target ≤ 400 words.
+    depends_on: [scan_memory, scan_git_history]
+    gate: auto
+    on_failure: retry
+    context_budget: 8000
+    model: DeepSeek V3.2
+
+  # ─── Wave 2: consolidate ─────────────────────────────────────────────────
+
+  consolidate:
+    prompt: |
+      You are the Dream consolidation engine. Synthesize the three knowledge-plane
+      analyses from context into ONE canonical Markdown memory document.
+
+      Rules — apply in order:
+        DEDUPLICATE  Same fact in multiple planes → keep once in the best section.
+        RECONCILE    Contradictions → keep [HIGH]; note ⚠ previously stated: <old>.
+        PRUNE        Drop uncorroborated [LOW] unless it matters for safety.
+        SURFACE      Strong agreement across planes but missing from old memory → ✨ New.
+        PRESERVE     Keep original [HIGH] unless contradicted by current evidence.
+
+      Required sections:
+
+        # Project Overview
+        # Code Structure
+        # Conventions & Tooling
+        # Active Decisions & Open Questions
+        # Changelog
+
+      Changelog: what changed vs prior memory (added / removed / reconciled).
+
+      Write for a developer cold-starting the repo. This run is fully automated — produce a
+      publication-ready draft; the user may promote to CLAUDE.md later.
+    depends_on: [analyze_code_structure, analyze_product_intent, analyze_conventions]
+    gate: auto
+    on_failure: retry
+    context_budget: 12000
+    model: DeepSeek V4 Pro
+
+  # ─── Wave 3: propose next Bronson workflows (self-improve loop) ───────────
+
+  draft_agent_workflows:
+    prompt: |
+      You design NEW Bronson orchestrator workflows so this project can keep improving itself.
+
+      Bronson YAML shape (must be valid structure):
+        name: <workflow_name>
+        jobs:
+          <job_id>:
+            prompt: |
+              ...
+            depends_on: [...]
+            gate: auto
+            model: <exact CLōD model id>
+            tools: [] or [shell] or [workspace_write] or both
+            context_budget: <int>
+            tool_rounds_max: <int>
+            on_failure: retry
+
+      From context you have: consolidated memory + analyses + scans.
+
+      Produce exactly TWO workflow proposals tailored to THIS repo:
+
+        1) memory_hygiene — periodic cleanup / dedupe of memory docs, sync skills
+        2) capability_build — concrete automation (tests, orchestrator, docs)
+
+      Output format (required — emit step parses these markers):
+
+        <<<YAML_MEMORY_HYGIENE>>>
+        name: memory_hygiene
+        jobs:
+          ...
+        <<<END_YAML_MEMORY_HYGIENE>>>
+
+        <<<YAML_CAPABILITY>>>
+        name: capability_build
+        jobs:
+          ...
+        <<<END_YAML_CAPABILITY>>>
+
+      Before each block, 3–5 bullet rationale. Each YAML: snake_case job ids, gate: auto only,
+      no human gates, non-destructive. Prefer workspace_write. Models must be valid CLōD ids.
+
+      No markdown fences around YAML — raw YAML only inside the markers.
+    depends_on: [consolidate]
+    gate: auto
+    on_failure: retry
+    context_budget: 14000
+    model: DeepSeek V4 Pro
+
+  # ─── Wave 4: write artifacts to disk (still never touches source memory) ───
+
+  emit_artifacts:
+    prompt: |
+      Context contains:
+        - consolidate → canonical Markdown memory (full body)
+        - draft_agent_workflows → text with <<<YAML_MEMORY_HYGIENE>>> ... <<<END_YAML_MEMORY_HYGIENE>>>
+          and <<<YAML_CAPABILITY>>> ... <<<END_YAML_CAPABILITY>>>
+
+      Never modify CLAUDE.md, .cursor/memory.md, or existing memory sources.
+
+      Steps:
+        1) workspace_write path .dream/memory-output.md — exact consolidate Markdown only.
+
+        2) From draft_agent_workflows text, extract raw YAML between the MEMORY_HYGIENE markers only.
+           workspace_write path .dream/proposed/memory-hygiene.yaml with that YAML.
+
+        3) Extract raw YAML between the CAPABILITY markers only.
+           workspace_write path .dream/proposed/capability-build.yaml with that YAML.
+
+        4) workspace_write path .dream/proposed/README.md — 8–12 lines: what each file is for,
+           and "Run via POST /api/runs or copy into examples/ and Load dream-state–style presets."
+
+      Shell once only if mkdir needed: mkdir -p .dream/proposed
+
+      If markers are missing, workspace_write .dream/proposed/draft-raw.txt with the full
+      draft_agent_workflows output for manual recovery.
+
+      End with:
+        DREAM COMPLETE — artifacts under .dream/
+    depends_on: [consolidate, draft_agent_workflows]
+    tools: [workspace_write, shell]
+    tool_rounds_max: 20
+    gate: auto
+    on_failure: retry
+    context_budget: 16000
+    model: DeepSeek V3.2
