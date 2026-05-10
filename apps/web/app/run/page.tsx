@@ -1,8 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { JobStatus, RunState, RunStatus } from "@bronson/types";
+import { ChevronDown } from "lucide-react";
+import type { JobState, JobStatus, RunState, RunStatus } from "@bronson/types";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   essayWorkflowYaml,
   parseDag,
@@ -65,6 +68,147 @@ function jobErrorsFromRun(run: RunState): Record<string, string> {
   return out;
 }
 
+function parseIsoMs(iso: string | undefined): number | undefined {
+  if (!iso) return undefined;
+  const t = Date.parse(iso);
+  return Number.isFinite(t) ? t : undefined;
+}
+
+/** Wall time for the job attempt: completed vs in-flight vs unknown. */
+function durationForJob(job: JobState | undefined, nowMs: number): number | undefined {
+  if (!job?.startedAt) return undefined;
+  const start = parseIsoMs(job.startedAt);
+  if (start == null) return undefined;
+  const inFlight =
+    job.status === "running" ||
+    job.status === "gate_pending" ||
+    job.status === "gate_approved";
+  const endMs = job.completedAt != null ? parseIsoMs(job.completedAt) : inFlight ? nowMs : undefined;
+  if (endMs == null) return undefined;
+  const ms = endMs - start;
+  return ms >= 0 ? ms : undefined;
+}
+
+function formatDurationMs(ms: number | undefined): string {
+  if (ms == null) return "—";
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)} s`;
+  const m = Math.floor(ms / 60_000);
+  const s = Math.round((ms % 60_000) / 1000);
+  return `${m}m ${s}s`;
+}
+
+type ModelRunnerStepCardProps = {
+  stepId: string;
+  deps: string[];
+  stepType: string | undefined;
+  status: StepStatus;
+  job: JobState | undefined;
+  jobError: string | undefined;
+  nowMs: number;
+};
+
+function ModelRunnerStepCard({
+  stepId,
+  deps,
+  stepType,
+  status,
+  job,
+  jobError,
+  nowMs,
+}: ModelRunnerStepCardProps) {
+  const tokens = job?.tokensUsed;
+  const durationMs = durationForJob(job, nowMs);
+  const tokenLabel = typeof tokens === "number" ? tokens.toLocaleString() : "—";
+  const timeLabel = formatDurationMs(durationMs);
+  const cost = job?.costUsd;
+
+  return (
+    <li>
+      <Card className="gap-0 py-0">
+        <Collapsible defaultOpen={Boolean(jobError)} className="group">
+          <CollapsibleTrigger asChild>
+            <button
+              type="button"
+              className="hover:bg-muted/30 flex w-full flex-col gap-3 px-4 py-4 text-left transition-colors sm:flex-row sm:items-center sm:justify-between sm:gap-4"
+            >
+              <div className="min-w-0 flex-1 space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="font-mono text-sm font-semibold text-foreground">{stepId}</p>
+                  <StatusLight status={status} />
+                </div>
+                {stepType ? (
+                  <p className="text-xs text-muted-foreground">
+                    type: <span className="font-mono text-foreground">{stepType}</span>
+                  </p>
+                ) : null}
+                <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs tabular-nums text-muted-foreground">
+                  <span>
+                    <span className="font-medium text-foreground/80">Tokens</span>{" "}
+                    <span className="font-mono text-foreground">{tokenLabel}</span>
+                  </span>
+                  <span>
+                    <span className="font-medium text-foreground/80">Time</span>{" "}
+                    <span className="font-mono text-foreground">{timeLabel}</span>
+                  </span>
+                </div>
+              </div>
+              <ChevronDown className="text-muted-foreground size-4 shrink-0 self-end transition-transform duration-200 group-data-[state=open]:rotate-180 sm:self-center" />
+            </button>
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <CardContent className="border-border space-y-4 border-t pt-4 pb-4">
+              <p className="text-xs text-muted-foreground">
+                depends on:{" "}
+                <span className="font-mono text-foreground">{deps.length ? deps.join(", ") : "—"}</span>
+              </p>
+              {typeof cost === "number" ? (
+                <p className="text-xs text-muted-foreground">
+                  Est. cost:{" "}
+                  <span className="font-mono text-foreground">
+                    {cost < 0.0001 ? cost.toExponential(2) : `$${cost.toFixed(4)}`}
+                  </span>
+                </p>
+              ) : null}
+              {(job?.startedAt || job?.completedAt) && (
+                <p className="text-[11px] leading-relaxed text-muted-foreground">
+                  {job.startedAt ? (
+                    <>
+                      started <span className="font-mono text-foreground/90">{job.startedAt}</span>
+                    </>
+                  ) : null}
+                  {job.startedAt && job.completedAt ? " · " : null}
+                  {job.completedAt ? (
+                    <>
+                      completed <span className="font-mono text-foreground/90">{job.completedAt}</span>
+                    </>
+                  ) : null}
+                </p>
+              )}
+              {job?.output?.trim() ? (
+                <div className="space-y-1">
+                  <p className="text-xs font-medium text-foreground">Output</p>
+                  <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted/50 p-3 font-mono text-[11px] leading-relaxed text-foreground ring-1 ring-border">
+                    {job.output.trim()}
+                  </pre>
+                </div>
+              ) : null}
+              {jobError ? (
+                <div className="rounded-lg border border-destructive/35 bg-destructive/5 p-3">
+                  <p className="text-xs font-medium text-destructive">Error</p>
+                  <pre className="mt-1 max-h-36 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-destructive">
+                    {jobError}
+                  </pre>
+                </div>
+              ) : null}
+            </CardContent>
+          </CollapsibleContent>
+        </Collapsible>
+      </Card>
+    </li>
+  );
+}
+
 export default function RunPage() {
   const [yamlText, setYamlText] = useState(starterYaml);
   const [statusByStep, setStatusByStep] = useState<Record<string, StepStatus>>({});
@@ -74,6 +218,9 @@ export default function RunPage() {
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [activeRunStatus, setActiveRunStatus] = useState<RunStatus | null>(null);
   const [jobErrors, setJobErrors] = useState<Record<string, string>>({});
+  /** Latest job payloads from GET /api/runs/:id (tokens, timing, output). */
+  const [jobDetails, setJobDetails] = useState<Record<string, JobState>>({});
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const abortRef = useRef(false);
   const eventSourceRef = useRef<EventSource | null>(null);
 
@@ -117,7 +264,14 @@ export default function RunPage() {
     const next: Record<string, StepStatus> = {};
     for (const id of graph.nodes) next[id] = "idle";
     setStatusByStep(next);
+    setJobDetails({});
   }, [yamlText, graph.nodes]);
+
+  useEffect(() => {
+    if (!isRunning) return;
+    const id = window.setInterval(() => setNowMs(Date.now()), 300);
+    return () => window.clearInterval(id);
+  }, [isRunning]);
 
   const stop = useCallback(() => {
     abortRef.current = true;
@@ -138,6 +292,7 @@ export default function RunPage() {
     abortRef.current = false;
     setRunError(null);
     setJobErrors({});
+    setJobDetails({});
     setActiveRunStatus(null);
     setIsRunning(true);
 
@@ -161,6 +316,7 @@ export default function RunPage() {
       setActiveRunId(runId);
       setActiveRunStatus(started.status);
       setJobErrors(jobErrorsFromRun(started));
+      setJobDetails({ ...started.jobs });
     } catch (e) {
       setIsRunning(false);
       setActiveRunId(null);
@@ -176,6 +332,7 @@ export default function RunPage() {
         const runState = (await res.json()) as RunState;
         setActiveRunStatus(runState.status);
         setJobErrors(jobErrorsFromRun(runState));
+        setJobDetails({ ...runState.jobs });
         setStatusByStep((prev) => {
           const next = { ...prev };
           for (const [jid, j] of Object.entries(runState.jobs)) {
@@ -323,17 +480,27 @@ export default function RunPage() {
             <p className="font-medium text-foreground">Typical fixes</p>
             <ul className="mt-2 list-disc space-y-1 pl-4">
               <li>
+                <code className="rounded bg-muted px-1">Refusing to start shell-capable job</code> /{" "}
+                <code className="rounded bg-muted px-1">ALLOW_SHELL_TOOL</code>: set{" "}
+                <code className="rounded bg-muted px-1">ALLOW_SHELL_TOOL=true</code> in{" "}
+                <code className="rounded bg-muted px-1">apps/orchestrator/.env</code>, restart the orchestrator, and
+                set <code className="rounded bg-muted px-1">TOOL_SHELL_CWD</code> to your essay workspace (preset uses{" "}
+                <code className="rounded bg-muted px-1">essay-draft.txt</code> relative to that folder).
+              </li>
+              <li>
                 CLōD HTTP 403/401: check <code className="rounded bg-muted px-1">CLOD_API_KEY</code>,{" "}
                 <code className="rounded bg-muted px-1">CLOD_BASE_URL</code>, and{" "}
                 <code className="rounded bg-muted px-1">DEFAULT_AGENT_MODEL</code> in{" "}
                 <code className="rounded bg-muted px-1">apps/orchestrator/.env</code>.
               </li>
               <li>
-                Essay / shell: set <code className="rounded bg-muted px-1">ALLOW_SHELL_TOOL=true</code>,{" "}
-                <code className="rounded bg-muted px-1">TOOL_SHELL_CWD</code> to your essay folder (must match paths in the YAML / essay preset), and relax{" "}
-                <code className="rounded bg-muted px-1">TOOL_SHELL_ALLOWLIST_REGEX</code> if commands are blocked.
+                Essay / shell allowlist: if commands are blocked, relax{" "}
+                <code className="rounded bg-muted px-1">TOOL_SHELL_ALLOWLIST_REGEX</code> (dev only).
               </li>
-              <li>Orchestrator must be running on port 3001 (or set web <code className="rounded bg-muted px-1">ORCHESTRATOR_URL</code>).</li>
+              <li>
+                Orchestrator URL: default web proxy is port 3001; if the orchestrator bound another port, set web{" "}
+                <code className="rounded bg-muted px-1">ORCHESTRATOR_URL</code> (see orchestrator startup log).
+              </li>
             </ul>
           </div>
         </div>
@@ -353,41 +520,18 @@ export default function RunPage() {
         <p className="text-sm text-muted-foreground">No steps defined. Add steps in the DAG editor.</p>
       ) : (
         <ul className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          {order.map((stepId) => {
-            const deps = graph.depsByNode.get(stepId) ?? [];
-            const type = graph.stepTypes.get(stepId);
-            const status = statusByStep[stepId] ?? "idle";
-            return (
-              <li
-                key={stepId}
-                className="flex flex-col gap-3 rounded-2xl border border-border bg-card p-4 shadow-sm ring-1 ring-black/5 dark:ring-white/10"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="font-mono text-sm font-semibold text-foreground">{stepId}</p>
-                    {type ? (
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        type: <span className="font-mono text-foreground">{type}</span>
-                      </p>
-                    ) : null}
-                  </div>
-                  <StatusLight status={status} />
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  depends on:{" "}
-                  <span className="font-mono text-foreground">{deps.length ? deps.join(", ") : "—"}</span>
-                </p>
-                {jobErrors[stepId] ? (
-                  <div className="rounded-lg border border-destructive/35 bg-destructive/5 p-3">
-                    <p className="text-xs font-medium text-destructive">Error</p>
-                    <pre className="mt-1 max-h-36 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-destructive">
-                      {jobErrors[stepId]}
-                    </pre>
-                  </div>
-                ) : null}
-              </li>
-            );
-          })}
+          {order.map((stepId) => (
+            <ModelRunnerStepCard
+              key={stepId}
+              stepId={stepId}
+              deps={graph.depsByNode.get(stepId) ?? []}
+              stepType={graph.stepTypes.get(stepId)}
+              status={statusByStep[stepId] ?? "idle"}
+              job={jobDetails[stepId]}
+              jobError={jobErrors[stepId]}
+              nowMs={nowMs}
+            />
+          ))}
         </ul>
       )}
     </main>

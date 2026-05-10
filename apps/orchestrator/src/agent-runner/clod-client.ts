@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import { AgentRunOptions, AgentRunResult } from "@bronson/types";
-import { buildJobContext } from "./context-router.js";
+import { buildJobContext, stripClodDsmlFromUserText } from "./context-router.js";
 import { eventLog } from "../event-log/event-log.js";
 import { resolveTools } from "./tool-registry.js";
 import { resolveAgentModel } from "./resolve-model.js";
@@ -41,12 +41,16 @@ export function assertClodConfigured(): void {
 export async function runAgent(runId: string, options: AgentRunOptions, upstreamOutputs: Record<string, string>): Promise<AgentRunResult> {
   const { jobId, jobConfig } = options;
   const contextSection = buildJobContext(upstreamOutputs, jobConfig.context_budget);
-  const userMessage = contextSection ? `${contextSection}\n\n---\n\n${jobConfig.prompt}` : jobConfig.prompt;
+  let userMessage = contextSection ? `${contextSection}\n\n---\n\n${jobConfig.prompt}` : jobConfig.prompt;
 
   eventLog.append(runId, "JOB_STARTED", jobId);
 
   const toolNames = jobConfig.tools ?? [];
   const resolved = toolNames.length > 0 ? resolveTools(toolNames) : { tools: [] as OpenAI.Chat.ChatCompletionTool[], execute: new Map<string, (a: Record<string, unknown>) => Promise<string>>() };
+
+  // Prior jobs' stored outputs can contain partial DSML tool markup; CLōD rejects that inside a
+  // new user message when this job has tools enabled (same 400 as incomplete assistant content).
+  if (resolved.tools.length) userMessage = stripClodDsmlFromUserText(userMessage);
 
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [{ role: "user", content: userMessage }];
   const maxRounds = jobConfig.tool_rounds_max ?? 12;
@@ -75,9 +79,13 @@ export async function runAgent(runId: string, options: AgentRunOptions, upstream
     const msg = response.choices[0]?.message;
     if (!msg) throw new Error("No assistant message in completion response");
 
+    // CLōD may treat assistant `content` as DSML when tools are in play. Models sometimes emit
+    // incomplete DSML in `content` alongside structured `tool_calls`; re-sending that `content`
+    // on the next request triggers 400 ("Missing end token '</｜DSML｜function_calls>'"). Match
+    // OpenAI guidance: omit prose when this turn is tool-driven (`content: null`).
     messages.push({
       role: "assistant",
-      content: msg.content ?? null,
+      content: msg.tool_calls?.length ? null : (msg.content ?? null),
       tool_calls: msg.tool_calls,
     });
 

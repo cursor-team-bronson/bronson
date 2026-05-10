@@ -47,8 +47,8 @@ export const essayWorkflowYaml = String.raw`# Essay writer / reviewer — three 
 #
 # Prerequisites (apps/orchestrator/.env):
 #   ALLOW_SHELL_TOOL=true
-#   TOOL_SHELL_CWD=C:\Users\julie\bronson\examples\essay-workspace
-#     (must match the folder below if you change paths)
+#   TOOL_SHELL_CWD=<repo>/examples/essay-workspace
+#     (shell runs with this cwd; writers use relative file name essay-draft.txt only)
 #
 # Optional allowlist (PowerShell commands for writing files); examples:
 #   TOOL_SHELL_ALLOWLIST_REGEX=^powershell
@@ -57,8 +57,7 @@ export const essayWorkflowYaml = String.raw`# Essay writer / reviewer — three 
 # Reviewers only see prior jobs' LLM outputs (context), not the disk file automatically.
 # Each writer must paste the full essay in its assistant reply so reviewers can react.
 #
-# Edit C:\Users\julie\bronson\examples\essay-workspace if you want a different folder;
-# keep TOOL_SHELL_CWD and shell paths in sync.
+# Change TOOL_SHELL_CWD if you use a different workspace; keep shell paths relative to that cwd.
 
 name: essay-write-review-3cycles
 
@@ -80,7 +79,7 @@ jobs:
         Example shape (you must substitute the real essay body; double any single quote inside the essay):
         powershell -NoProfile -Command "$t = @'
         YOUR ESSAY TEXT HERE
-        '@; Set-Content -LiteralPath 'C:\Users\julie\bronson\examples\essay-workspace\essay-draft.txt' -Value $t -Encoding utf8"
+        '@; Set-Content -LiteralPath 'essay-draft.txt' -Value $t -Encoding utf8"
       - End your reply after the shell tool result with the single word: done
     tools: [shell]
     tool_rounds_max: 12
@@ -115,8 +114,7 @@ jobs:
 
       Rules:
       - Output the full revised essay between ###ESSAY_START### and ###ESSAY_END###.
-      - Invoke the shell tool exactly once to overwrite:
-        C:\Users\julie\bronson\examples\essay-workspace\essay-draft.txt
+      - Invoke the shell tool exactly once to overwrite essay-draft.txt (under TOOL_SHELL_CWD)
         with the same revised essay (PowerShell Set-Content pattern as in cycle 1).
       - End with: done
     tools: [shell]
@@ -147,9 +145,7 @@ jobs:
 
       Rules:
       - Final essay between ###ESSAY_START### and ###ESSAY_END###.
-      - Shell tool once: overwrite
-        C:\Users\julie\bronson\examples\essay-workspace\essay-draft.txt
-        with the final essay (same PowerShell pattern).
+      - Shell tool once: overwrite essay-draft.txt with the final essay (same PowerShell pattern).
       - End with: done
     tools: [shell]
     tool_rounds_max: 12
