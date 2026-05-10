@@ -44,13 +44,11 @@ export async function runAgent(
   options: AgentRunOptions,
   upstreamOutputs: Record<string, string>,
 ): Promise<AgentRunResult> {
-  const { jobId, jobConfig } = options;
+  const { jobId, jobConfig, abortSignal } = options;
   const contextSection = buildJobContext(upstreamOutputs, jobConfig.context_budget);
-  const userMessage = contextSection
+  let userMessage = contextSection
     ? `${contextSection}\n\n---\n\n${jobConfig.prompt}`
     : jobConfig.prompt;
-
-  eventLog.append(runId, "JOB_STARTED", jobId);
 
   const toolNames = jobConfig.tools ?? [];
   const resolved = toolNames.length > 0 ? resolveTools(toolNames) : { tools: [] as OpenAI.Chat.ChatCompletionTool[], execute: new Map<string, (a: Record<string, unknown>) => Promise<string>>() };
