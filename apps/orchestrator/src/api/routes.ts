@@ -182,14 +182,14 @@ router.post("/runs/:runId/jobs/:jobId/fund", (req, res) => {
       res.status(400).json({ error: "amountUsd (positive number) required" });
       return;
     }
-    topUpJobBudget(req.params.runId, req.params.jobId, amountUsd, intentId);
+    budgetTracker.topUp(req.params.runId, req.params.jobId, amountUsd, intentId);
     res.json({ ok: true });
   } catch (err) { res.status(400).json({ error: String(err) }); }
 });
 
 router.post("/runs/:runId/jobs/:jobId/cancel-funding", (req, res) => {
   try {
-    cancelJobFunding(req.params.runId, req.params.jobId);
+    budgetTracker.cancelFunding(req.params.runId, req.params.jobId);
     res.json({ ok: true });
   } catch (err) { res.status(400).json({ error: String(err) }); }
 });

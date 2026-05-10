@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from "uuid";
-import { WorkflowConfig, RunState, JobState, SerializedDAG, EventType } from "@bronson/types";
+import { WorkflowConfig, RunState, JobState, JobStatus, SerializedDAG, EventType } from "@bronson/types";
 import { resolveDAG } from "../parser/dag-resolver.js";
 import { eventLog, VersionMismatchError } from "../event-log/event-log.js";
 import { gateManager } from "../gates/gate-manager.js";
@@ -211,14 +211,9 @@ export async function continuePersistedRun(runId: string): Promise<RunState | nu
 
 function cancelAwaitingJobs(run: RunState, reason: string): void {
   const now = new Date().toISOString();
+  const active: JobStatus[] = ["pending", "running", "gate_pending", "gate_approved", "awaiting_funding"];
   for (const j of Object.values(run.jobs)) {
-    if (
-      j.status === "pending" ||
-      j.status === "running" ||
-      j.status === "gate_pending" ||
-      j.status === "gate_approved" ||
-      j.status === "awaiting_funding"
-    ) {
+    if (active.includes(j.status)) {
       j.status = "skipped";
       j.completedAt = now;
       j.error = reason;
