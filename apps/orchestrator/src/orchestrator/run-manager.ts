@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from "uuid";
-import { WorkflowConfig, RunState, JobState, SerializedDAG } from "@bronson/types";
+import { WorkflowConfig, RunState, JobState, SerializedDAG, EventType } from "@bronson/types";
 import { resolveDAG } from "../parser/dag-resolver.js";
 import { eventLog, VersionMismatchError } from "../event-log/event-log.js";
 import { gateManager } from "../gates/gate-manager.js";
@@ -75,14 +75,15 @@ async function committedJobOutput(runId: string, jobId: string): Promise<string 
 
 function appendGateEvent(
   runId: string,
-  type: "GATE_PENDING" | "GATE_APPROVED" | "GATE_REJECTED",
-  jobId: string,
+  type: EventType,
+  jobId?: string,
   payload?: Record<string, unknown>,
 ) {
   for (;;) {
     const expectedVersion = eventLog.getLastVersion(runId);
     try {
-      return eventLog.append(runId, type, jobId, payload, expectedVersion);
+      eventLog.append(runId, type, jobId, payload, expectedVersion);
+      return;
     } catch (e) {
       if (e instanceof VersionMismatchError) continue;
       throw e;
@@ -124,6 +125,7 @@ export async function startRun(config: WorkflowConfig, workflowYamlSnapshot: str
 
   const p = executeRun(run, config, dag.executionWaves).catch((err) => {
     run.status = "failed";
+    run.completedAt = run.completedAt ?? new Date().toISOString();
     eventLog.append(runId, "RUN_FAILED", undefined, { error: String(err) });
     void persistRunStatus(runId, "failed");
   });
@@ -199,6 +201,7 @@ function applyRunTerminalState(run: RunState, config: WorkflowConfig): void {
   if (failedJobIds.length > 0) {
     run.status = "failed";
     run.completedAt = new Date().toISOString();
+    cancelAwaitingJobs(run, "Run failed");
     eventLog.append(run.runId, "RUN_FAILED", undefined, {
       reason: "One or more jobs failed after retries",
       failedJobIds,
@@ -375,8 +378,10 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
 
         if (decision.editedOutput) finalOutput = decision.editedOutput;
         jobState.status = "gate_approved";
+        await persistStepGateApproved(run.runId, jobId);
         run.status = gateManager.listPending(run.runId).length > 0 ? "gate_pending" : "running";
-        appendGateEvent(run.runId, "GATE_APPROVED", jobId);
+        await persistWorkflowRunStatus(run.runId, run.status);
+        appendVersioned(run.runId, "GATE_APPROVED", jobId);
       }
 
       jobState.status = "completed";

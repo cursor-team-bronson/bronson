@@ -4,6 +4,7 @@ import express from "express";
 import cors from "cors";
 import { router } from "./api/routes.js";
 import { assertClodConfigured } from "./agent-runner/clod-client.js";
+
 assertClodConfigured();
 
 const modelFromEnv =
