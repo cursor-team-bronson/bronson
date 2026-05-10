@@ -23,9 +23,9 @@ router.get("/runs/:runId", (req, res) => {
   res.json(run);
 });
 
-//Dedicated DAG endpoint for frontend
+// Dedicated DAG endpoint for frontend (same payload as `RunState.dag`)
 router.get("/runs/:runId/dag", (req, res) => {
-  const run = getRun(req.params.runId) as any;
+  const run = getRun(req.params.runId);
   if (!run) { res.status(404).json({ error: "Run not found" }); return; }
   if (!run.dag) { res.status(404).json({ error: "DAG not found for this run" }); return; }
   res.json(run.dag);
