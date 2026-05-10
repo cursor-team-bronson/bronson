@@ -59,7 +59,7 @@ export async function createCheckoutIntent(params: {
     order_description: params.description,
     redirect_url:
       params.redirectUrl ??
-      `${process.env.NEXT_PUBLIC_URL ?? "http://localhost:3000"}/runs/${params.orderId}`,
+      `${process.env.NEXT_PUBLIC_URL ?? "http://localhost:3000"}`,
     extra: { source: "bronson_agent_pipeline" },
   });
 

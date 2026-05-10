@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from "uuid";
-import { WorkflowConfig, RunState, JobState, SerializedDAG } from "@bronson/types";
+import { WorkflowConfig, RunState, JobState, SerializedDAG, EventType } from "@bronson/types";
 import { resolveDAG } from "../parser/dag-resolver.js";
 import { eventLog, VersionMismatchError } from "../event-log/event-log.js";
 import { gateManager } from "../gates/gate-manager.js";
@@ -12,16 +12,18 @@ export const getRun = (runId: string) => runs.get(runId);
 export const getRunDag = (runId: string) => getRun(runId)?.dag;
 export const listRuns = () => [...runs.values()];
 
-function appendGateEvent(
+/** Append an event with optimistic concurrency — retries on version mismatch. */
+function appendVersioned(
   runId: string,
-  type: "GATE_PENDING" | "GATE_APPROVED" | "GATE_REJECTED",
-  jobId: string,
+  type: EventType,
+  jobId?: string,
   payload?: Record<string, unknown>,
 ) {
   for (;;) {
     const expectedVersion = eventLog.getLastVersion(runId);
     try {
-      return eventLog.append(runId, type, jobId, payload, expectedVersion);
+      eventLog.append(runId, type, jobId, payload, expectedVersion);
+      return;
     } catch (e) {
       if (e instanceof VersionMismatchError) continue;
       throw e;
@@ -81,16 +83,18 @@ export function topUpJobBudget(runId: string, jobId: string, amountUsd: number) 
 
   budgetTracker.topUp(runId, jobId, amountUsd);
   jobState.checkoutUrl = undefined;
-  for (;;) {
-    const expectedVersion = eventLog.getLastVersion(runId);
-    try {
-      eventLog.append(runId, "BUDGET_FUNDED", jobId, { amountUsd }, expectedVersion);
-      break;
-    } catch (e) {
-      if (e instanceof VersionMismatchError) continue;
-      throw e;
-    }
-  }
+  appendVersioned(runId, "BUDGET_FUNDED", jobId, { amountUsd });
+}
+
+export function cancelJobFunding(runId: string, jobId: string) {
+  const run = runs.get(runId);
+  if (!run) throw new Error(`Run ${runId} not found`);
+  const jobState = run.jobs[jobId];
+  if (!jobState) throw new Error(`Job ${jobId} not found in run ${runId}`);
+  if (jobState.status !== "awaiting_funding")
+    throw new Error(`Job ${jobId} is not awaiting funding (status: ${jobState.status})`);
+
+  budgetTracker.cancelFunding(runId, jobId, "Funding cancelled by user");
 }
 
 async function executeRun(run: RunState, config: WorkflowConfig, waves: string[][]): Promise<void> {
@@ -103,6 +107,7 @@ async function executeRun(run: RunState, config: WorkflowConfig, waves: string[]
       )
     ) {
       run.status = "failed";
+      cancelAwaitingJobs(run, "Run halted due to job failure");
       eventLog.append(run.runId, "RUN_FAILED", undefined, { reason: "Job failed with on_failure: halt" });
       return;
     }
@@ -112,6 +117,7 @@ async function executeRun(run: RunState, config: WorkflowConfig, waves: string[]
   if (failedJobIds.length > 0) {
     run.status = "failed";
     run.completedAt = new Date().toISOString();
+    cancelAwaitingJobs(run, "Run failed");
     eventLog.append(run.runId, "RUN_FAILED", undefined, {
       reason: "One or more jobs failed after retries",
       failedJobIds,
@@ -122,6 +128,14 @@ async function executeRun(run: RunState, config: WorkflowConfig, waves: string[]
   run.status = "completed";
   run.completedAt = new Date().toISOString();
   eventLog.append(run.runId, "RUN_COMPLETED");
+}
+
+function cancelAwaitingJobs(run: RunState, reason: string) {
+  for (const [jobId, jobState] of Object.entries(run.jobs)) {
+    if (jobState.status === "awaiting_funding") {
+      budgetTracker.cancelFunding(run.runId, jobId, reason);
+    }
+  }
 }
 
 async function executeJob(run: RunState, config: WorkflowConfig, jobId: string): Promise<void> {
@@ -146,7 +160,7 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
       if (jobConfig.gate === "human") {
         jobState.status = "gate_pending";
         run.status = "gate_pending";
-        appendGateEvent(run.runId, "GATE_PENDING", jobId, { proposedOutput: result.output });
+        appendVersioned(run.runId, "GATE_PENDING", jobId, { proposedOutput: result.output });
 
         const decision = await gateManager.waitForApproval({
           runId: run.runId,
@@ -158,14 +172,14 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
         if (!decision.approved) {
           jobState.status = "failed";
           jobState.error = decision.reason ?? "Gate rejected";
-          appendGateEvent(run.runId, "GATE_REJECTED", jobId, { reason: decision.reason });
+          appendVersioned(run.runId, "GATE_REJECTED", jobId, { reason: decision.reason });
           return;
         }
 
         if (decision.editedOutput) finalOutput = decision.editedOutput;
         jobState.status = "gate_approved";
         run.status = gateManager.listPending(run.runId).length > 0 ? "gate_pending" : "running";
-        appendGateEvent(run.runId, "GATE_APPROVED", jobId);
+        appendVersioned(run.runId, "GATE_APPROVED", jobId);
       }
 
       jobState.status = "completed";
@@ -173,7 +187,7 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
       jobState.output = finalOutput;
       jobState.tokensUsed = result.tokensUsed;
       jobState.costUsd = result.costUsd;
-      eventLog.append(run.runId, "JOB_COMPLETED", jobId, {
+      appendVersioned(run.runId, "JOB_COMPLETED", jobId, {
         output: finalOutput,
         tokensUsed: result.tokensUsed,
         costUsd: result.costUsd,
@@ -183,14 +197,33 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
       if (err instanceof BudgetExceededError) {
         jobState.status = "awaiting_funding";
         jobState.checkoutUrl = err.checkoutUrl;
-        eventLog.append(run.runId, "BUDGET_EXCEEDED", jobId, {
+        appendVersioned(run.runId, "BUDGET_EXCEEDED", jobId, {
           spentUsd: err.spentUsd,
           limitUsd: err.limitUsd,
           checkoutUrl: err.checkoutUrl,
           intentId: err.intentId,
         });
-        await budgetTracker.waitForFunding(run.runId, jobId);
-        eventLog.append(run.runId, "JOB_RESUMED", jobId);
+
+        try {
+          await budgetTracker.waitForFunding(run.runId, jobId);
+        } catch (fundErr) {
+          jobState.status = "failed";
+          jobState.error = String(fundErr);
+          appendVersioned(run.runId, "JOB_FAILED", jobId, { error: String(fundErr) });
+          return;
+        }
+
+        appendVersioned(run.runId, "JOB_RESUMED", jobId);
+
+        if (err.output !== undefined) {
+          // LLM output was already produced before the budget was exceeded — use it directly
+          jobState.status = "completed";
+          jobState.completedAt = new Date().toISOString();
+          jobState.output = err.output;
+          appendVersioned(run.runId, "JOB_COMPLETED", jobId, { output: err.output });
+          return;
+        }
+
         attempt--;
         continue;
       }

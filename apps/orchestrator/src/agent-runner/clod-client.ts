@@ -2,7 +2,7 @@ import OpenAI from "openai";
 import { AgentRunOptions, AgentRunResult } from "@bronson/types";
 import { buildJobContext } from "./context-router.js";
 import { eventLog } from "../event-log/event-log.js";
-import { budgetTracker } from "../orchestrator/budget-tracker.js";
+import { budgetTracker, BudgetExceededError } from "../orchestrator/budget-tracker.js";
 
 const clod = new OpenAI({
   baseURL: process.env.CLOD_BASE_URL ?? "https://api.clod.io/v1",
@@ -38,8 +38,20 @@ export async function runAgent(
   const tokensUsed = usage ? usage.prompt_tokens + usage.completion_tokens : 0;
   const costUsd = (response as any).cost ?? 0;
 
-  // Deduct from budget if one is configured — may throw BudgetExceededError
-  await budgetTracker.deduct(runId, jobId, costUsd);
+  // Deduct from budget. If exceeded, re-throw with the already-computed output
+  // attached so run-manager can use it on resume instead of re-running the LLM.
+  try {
+    await budgetTracker.deduct(runId, jobId, costUsd);
+  } catch (err) {
+    if (err instanceof BudgetExceededError) {
+      throw new BudgetExceededError(
+        err.runId, err.jobId, err.spentUsd, err.limitUsd,
+        err.checkoutUrl, err.intentId,
+        output,
+      );
+    }
+    throw err;
+  }
 
   return { output, tokensUsed, costUsd };
 }

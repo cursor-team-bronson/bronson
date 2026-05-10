@@ -8,6 +8,8 @@ export class BudgetExceededError extends Error {
     readonly limitUsd: number,
     readonly checkoutUrl: string,
     readonly intentId: string,
+    /** LLM output already produced before the budget was exceeded — avoids a duplicate call on resume. */
+    readonly output?: string,
   ) {
     super(
       `Job "${jobId}" exceeded budget $${limitUsd.toFixed(4)} (spent $${spentUsd.toFixed(4)}). Fund at: ${checkoutUrl}`,
@@ -26,6 +28,7 @@ interface JobBudgetState {
   awaiting: boolean;
   /** Set to true after topUp resolves the gate; prevents duplicate webhook deliveries from double-decrementing. */
   settled: boolean;
+  timeoutHandle?: ReturnType<typeof setTimeout>;
 }
 
 class BudgetTracker {
@@ -62,6 +65,7 @@ class BudgetTracker {
           amountUsdc: topupAmount,
           orderId: `${runId}::${jobId}::${Date.now()}`,
           description: `Budget top-up for job "${jobId}" in run "${runId}"`,
+          redirectUrl: `${process.env.NEXT_PUBLIC_URL ?? "http://localhost:3000"}/runs/${runId}`,
         });
         entry.intentId = checkout.intent_id;
         entry.checkoutUrl = checkout.checkout_url;
@@ -84,8 +88,9 @@ class BudgetTracker {
   /**
    * Suspend execution until funds arrive. Returns a Promise that resolves
    * when topUp() is called (e.g. from the AllScale webhook).
+   * Rejects after timeoutMs if never funded (default: 1 hour).
    */
-  waitForFunding(runId: string, jobId: string): Promise<void> {
+  waitForFunding(runId: string, jobId: string, timeoutMs = 3_600_000): Promise<void> {
     const k = this.key(runId, jobId);
     const entry = this.state.get(k);
     if (!entry) return Promise.resolve();
@@ -95,6 +100,15 @@ class BudgetTracker {
     return new Promise<void>((resolve, reject) => {
       entry.resolve = resolve;
       entry.reject = reject;
+
+      entry.timeoutHandle = setTimeout(() => {
+        if (!entry.settled) {
+          entry.awaiting = false;
+          entry.resolve = undefined;
+          entry.reject = undefined;
+          reject(new Error(`Job "${jobId}" funding timed out after ${timeoutMs}ms`));
+        }
+      }, timeoutMs);
     });
   }
 
@@ -111,12 +125,35 @@ class BudgetTracker {
     entry.checkoutUrl = undefined;
     entry.awaiting = false;
 
+    if (entry.timeoutHandle) {
+      clearTimeout(entry.timeoutHandle);
+      entry.timeoutHandle = undefined;
+    }
+
     if (entry.resolve) {
       const resolve = entry.resolve;
       entry.resolve = undefined;
       entry.reject = undefined;
       resolve();
     }
+  }
+
+  /** Cancel a pending funding gate — rejects the waitForFunding promise. */
+  cancelFunding(runId: string, jobId: string, reason = "Funding cancelled") {
+    const k = this.key(runId, jobId);
+    const entry = this.state.get(k);
+    if (!entry?.reject) return;
+
+    if (entry.timeoutHandle) {
+      clearTimeout(entry.timeoutHandle);
+      entry.timeoutHandle = undefined;
+    }
+
+    const reject = entry.reject;
+    entry.resolve = undefined;
+    entry.reject = undefined;
+    entry.awaiting = false;
+    reject(new Error(reason));
   }
 
   getState(runId: string, jobId: string): Readonly<JobBudgetState> | undefined {
