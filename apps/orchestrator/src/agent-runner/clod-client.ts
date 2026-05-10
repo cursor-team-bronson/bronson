@@ -80,16 +80,20 @@ export async function runAgent(
     totalCost += Number((response as { cost?: number }).cost ?? 0);
 
     // Deduct from budget after each round. If exceeded, re-throw with the
-    // accumulated output so run-manager can use it on resume.
+    // final output attached *only* when this was a terminal round (no tool
+    // calls). When the model returned tool_calls, content is null — passing
+    // undefined tells run-manager to retry the entire agent call after funding.
     try {
       await budgetTracker.deduct(runId, jobId, Number((response as { cost?: number }).cost ?? 0));
     } catch (err) {
       if (err instanceof BudgetExceededError) {
-        const partialOutput = response.choices[0]?.message?.content ?? "";
+        const msg = response.choices[0]?.message;
+        const isFinalAnswer = !msg?.tool_calls?.length && msg?.content != null;
         throw new BudgetExceededError(
           err.runId, err.jobId, err.spentUsd, err.limitUsd,
           err.checkoutUrl, err.intentId,
-          partialOutput, totalTokens, totalCost,
+          isFinalAnswer ? msg!.content! : undefined,
+          totalTokens, totalCost,
         );
       }
       throw err;
