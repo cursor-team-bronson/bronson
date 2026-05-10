@@ -16,7 +16,7 @@ import {
   persistRunStatus,
 } from "../persistence/supabase-job-store.js";
 import { persistStepGateApproved, persistWorkflowRunStatus } from "../persist/supabase-sync.js";
-import { attachJobAbort, detachJobAbort } from "./job-abort-registry.js";
+import { attachJobAbort, detachJobAbort, stopJobRequest } from "./job-abort-registry.js";
 import { budgetTracker, BudgetExceededError } from "./budget-tracker.js";
 
 const runs = new Map<string, RunState>();
@@ -34,7 +34,12 @@ function trackRunExecution(runId: string, p: Promise<void>): void {
 
 function normalizeJobsForResume(run: RunState): void {
   for (const j of Object.values(run.jobs)) {
-    if (j.status === "running" || j.status === "gate_approved" || j.status === "gate_pending") {
+    if (
+      j.status === "running" ||
+      j.status === "gate_approved" ||
+      j.status === "gate_pending" ||
+      j.status === "awaiting_funding"
+    ) {
       j.status = "pending";
       j.retryCount = 0;
       delete j.startedAt;
@@ -43,6 +48,7 @@ function normalizeJobsForResume(run: RunState): void {
       delete j.tokensUsed;
       delete j.costUsd;
       delete j.error;
+      delete j.checkoutUrl;
     }
   }
 }
@@ -195,7 +201,8 @@ export async function continuePersistedRun(runId: string): Promise<RunState | nu
         j.status === "pending" ||
         j.status === "running" ||
         j.status === "gate_pending" ||
-        j.status === "gate_approved",
+        j.status === "gate_approved" ||
+        j.status === "awaiting_funding",
     );
     if (!hasIncomplete) return abandonClaim();
 
@@ -253,21 +260,33 @@ export function stopRun(runId: string) {
   if (run.status === "completed" || run.status === "failed")
     throw new Error(`Run ${runId} already ${run.status}`);
   killed.add(runId);
+  for (const jid of Object.keys(run.jobs)) {
+    stopJobRequest(runId, jid);
+  }
   run.status = "failed";
   run.completedAt = new Date().toISOString();
   cancelBudgetFundingAwaiters(run, "Run killed by user");
   gateManager.cancelAll(runId, "Run killed by user");
+  const terminalAt = new Date().toISOString();
   for (const [_jobId, jobState] of Object.entries(run.jobs)) {
     if (jobState.status === "running" || jobState.status === "gate_pending" || jobState.status === "gate_approved" || jobState.status === "awaiting_funding") {
       jobState.status = "failed";
       jobState.error = "Run killed by user";
       jobState.checkoutUrl = undefined;
+      jobState.completedAt = terminalAt;
     }
     if (jobState.status === "pending") {
       jobState.status = "skipped";
+      jobState.completedAt = terminalAt;
     }
   }
   appendRunEvent(runId, "RUN_FAILED", undefined, { reason: "Killed by user" });
+  void persistRunStatus(runId, "failed");
+  for (const [, jobState] of Object.entries(run.jobs)) {
+    void persistJobRow(runId, { ...jobState }).catch((e) =>
+      console.error("[bronson] stopRun persistJobRow:", jobState.jobId, e),
+    );
+  }
 }
 
 /** Release jobs blocked on budget funding (side-effect only — does not change job status). Used by stopRun before applying explicit terminal statuses. */
@@ -479,6 +498,7 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
       const out = await committedJobOutput(run.runId, dep);
       if (out) upstreamOutputs[dep] = out;
     }
+    if (killed.has(run.runId)) return;
 
     const ac = attachJobAbort(run.runId, jobId);
     try {
@@ -520,6 +540,7 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
         appendRunEvent(run.runId, "GATE_APPROVED", jobId);
       }
 
+      if (killed.has(run.runId)) return;
       jobState.status = "completed";
       jobState.completedAt = new Date().toISOString();
       jobState.output = finalOutput;
@@ -582,8 +603,10 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
             if (killed.has(run.runId)) return;
             if (!decision.approved) {
               jobState.status = "failed";
+              jobState.completedAt = new Date().toISOString();
               jobState.error = decision.reason ?? "Gate rejected";
               appendRunEvent(run.runId, "GATE_REJECTED", jobId, { reason: decision.reason });
+              await persistJobRow(run.runId, { ...jobState });
               return;
             }
             if (decision.editedOutput) finalOutput = decision.editedOutput;
@@ -591,6 +614,7 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
             run.status = gateManager.listPending(run.runId).length > 0 ? "gate_pending" : "running";
             appendRunEvent(run.runId, "GATE_APPROVED", jobId);
           }
+          if (killed.has(run.runId)) return;
           jobState.status = "completed";
           jobState.completedAt = new Date().toISOString();
           jobState.output = finalOutput;

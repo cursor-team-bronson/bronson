@@ -422,9 +422,17 @@ export default function RunPage() {
     async (stepId: string) => {
       if (!activeRunId) return;
       try {
-        await fetch(`/api/runs/${activeRunId}/jobs/${encodeURIComponent(stepId)}/stop`, { method: "POST" });
-      } catch {
-        /* ignore */
+        const res = await fetch(`/api/runs/${activeRunId}/jobs/${encodeURIComponent(stepId)}/stop`, {
+          method: "POST",
+        });
+        const body = await res.text().catch(() => "");
+        if (!res.ok) {
+          setRunError(`Stop job failed (${res.status}): ${body.slice(0, 240) || res.statusText}`);
+          return;
+        }
+      } catch (e) {
+        setRunError(e instanceof Error ? e.message : String(e));
+        return;
       }
       await fetchAndApplyRunState(activeRunId);
     },
