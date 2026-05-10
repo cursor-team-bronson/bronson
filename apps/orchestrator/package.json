@@ -5,7 +5,7 @@
   "main": "dist/index.js",
   "scripts": {
     "predev": "npm --prefix ../../packages/types run build",
-    "dev": "tsx watch src/index.ts",
+    "dev": "node scripts/free-port.cjs && tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit"

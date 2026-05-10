@@ -39,6 +39,137 @@ steps:
     human_gate_after: merge-agent-outputs
 `;
 
+/**
+ * Mirrors `examples/essay-write-review-3cycles.yaml` — keep in sync manually (POC).
+ * Uses String.raw so Windows paths stay single-backslash in the YAML text.
+ */
+export const essayWorkflowYaml = String.raw`# Essay writer / reviewer — three cycles (six sequential jobs).
+#
+# Prerequisites (apps/orchestrator/.env):
+#   ALLOW_SHELL_TOOL=true
+#   TOOL_SHELL_CWD=C:\Users\julie\bronson\examples\essay-workspace
+#     (must match the folder below if you change paths)
+#
+# Optional allowlist (PowerShell commands for writing files); examples:
+#   TOOL_SHELL_ALLOWLIST_REGEX=^powershell
+#   or broader (dev only): TOOL_SHELL_ALLOWLIST_REGEX=.*
+#
+# Reviewers only see prior jobs' LLM outputs (context), not the disk file automatically.
+# Each writer must paste the full essay in its assistant reply so reviewers can react.
+#
+# Edit C:\Users\julie\bronson\examples\essay-workspace if you want a different folder;
+# keep TOOL_SHELL_CWD and shell paths in sync.
+
+name: essay-write-review-3cycles
+
+jobs:
+  write_cycle_1:
+    prompt: |
+      You are the WRITER (cycle 1 of 3).
+
+      Topic: "Why short feedback loops matter when building software."
+
+      Rules:
+      - Write a first draft of roughly 250–400 words, clear prose, no markdown headings required.
+      - In your assistant message, include the full essay between these lines exactly:
+        ###ESSAY_START###
+        ...full essay text...
+        ###ESSAY_END###
+      - Then invoke the shell tool exactly once. Save the same essay text to disk under the
+        working directory (TOOL_SHELL_CWD), file name essay-draft.txt only, using PowerShell.
+        Example shape (you must substitute the real essay body; double any single quote inside the essay):
+        powershell -NoProfile -Command "$t = @'
+        YOUR ESSAY TEXT HERE
+        '@; Set-Content -LiteralPath 'C:\Users\julie\bronson\examples\essay-workspace\essay-draft.txt' -Value $t -Encoding utf8"
+      - End your reply after the shell tool result with the single word: done
+    tools: [shell]
+    tool_rounds_max: 12
+    gate: auto
+    context_budget: 12000
+
+  review_cycle_1:
+    prompt: |
+      You are the REVIEWER (after cycle 1).
+
+      Read the section ###ESSAY_START### ... ###ESSAY_END### from the writer output in context.
+
+      Respond with:
+      1) Summary (2–3 sentences)
+      2) Strengths (bullet list)
+      3) Issues / gaps (bullet list)
+      4) Concrete edits the writer should apply in the next draft (numbered list)
+
+      Do not use the shell tool.
+    depends_on: [write_cycle_1]
+    gate: auto
+    context_budget: 12000
+
+  write_cycle_2:
+    prompt: |
+      You are the WRITER (cycle 2 of 3).
+
+      Topic (same): "Why short feedback loops matter when building software."
+
+      Use the REVIEWER feedback in context from review_cycle_1. Revise the essay: address their
+      concrete edits while keeping a coherent voice.
+
+      Rules:
+      - Output the full revised essay between ###ESSAY_START### and ###ESSAY_END###.
+      - Invoke the shell tool exactly once to overwrite:
+        C:\Users\julie\bronson\examples\essay-workspace\essay-draft.txt
+        with the same revised essay (PowerShell Set-Content pattern as in cycle 1).
+      - End with: done
+    tools: [shell]
+    tool_rounds_max: 12
+    depends_on: [review_cycle_1]
+    gate: auto
+    context_budget: 12000
+
+  review_cycle_2:
+    prompt: |
+      You are the REVIEWER (after cycle 2).
+
+      Read the latest essay between ###ESSAY_START### and ###ESSAY_END### in context.
+
+      Same four sections as before (summary, strengths, issues, concrete edits for next draft).
+      Be stricter about clarity and structure if earlier issues remain.
+
+      Do not use the shell tool.
+    depends_on: [write_cycle_2]
+    gate: auto
+    context_budget: 12000
+
+  write_cycle_3:
+    prompt: |
+      You are the WRITER (cycle 3 of 3 — final revision).
+
+      Topic (same). Apply review_cycle_2 feedback from context.
+
+      Rules:
+      - Final essay between ###ESSAY_START### and ###ESSAY_END###.
+      - Shell tool once: overwrite
+        C:\Users\julie\bronson\examples\essay-workspace\essay-draft.txt
+        with the final essay (same PowerShell pattern).
+      - End with: done
+    tools: [shell]
+    tool_rounds_max: 12
+    depends_on: [review_cycle_2]
+    gate: auto
+    context_budget: 12000
+
+  review_cycle_3:
+    prompt: |
+      You are the REVIEWER (final pass).
+
+      Read the final essay from context. Give a brief acceptance-style summary: ready or not,
+      top remaining nitpicks (if any), and one sentence overall verdict.
+
+      Do not use the shell tool.
+    depends_on: [write_cycle_3]
+    gate: auto
+    context_budget: 12000
+`;
+
 export const yamlHelpExample = `name: parallel-agents
 steps:
   - id: orchestrate
