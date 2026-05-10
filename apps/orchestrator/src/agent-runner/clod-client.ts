@@ -53,6 +53,8 @@ export async function runAgent(runId: string, options: AgentRunOptions, upstream
   const model = resolveAgentModel(jobConfig);
 
   let totalTokens = 0;
+  let totalPromptTokens = 0;
+  let totalCompletionTokens = 0;
   let totalCost = 0;
 
   for (let round = 0; round < maxRounds; round++) {
@@ -69,7 +71,13 @@ export async function runAgent(runId: string, options: AgentRunOptions, upstream
     }
 
     const usage = response.usage;
-    if (usage) totalTokens += (usage.prompt_tokens ?? 0) + (usage.completion_tokens ?? 0);
+    if (usage) {
+      const pt = usage.prompt_tokens ?? 0;
+      const ct = usage.completion_tokens ?? 0;
+      totalPromptTokens += pt;
+      totalCompletionTokens += ct;
+      totalTokens += pt + ct;
+    }
     totalCost += Number((response as { cost?: number }).cost ?? 0);
 
     const msg = response.choices[0]?.message;
@@ -86,6 +94,8 @@ export async function runAgent(runId: string, options: AgentRunOptions, upstream
         output: msg.content ?? "",
         tokensUsed: totalTokens,
         costUsd: totalCost,
+        promptTokens: totalPromptTokens,
+        completionTokens: totalCompletionTokens,
       };
     }
 

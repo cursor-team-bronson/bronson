@@ -68,7 +68,12 @@ export interface AgentRunOptions {
   jobId: string; jobConfig: JobConfig; contextInput: string;
 }
 export interface AgentRunResult {
-  output: string; tokensUsed: number; costUsd: number;
+  output: string;
+  tokensUsed: number;
+  costUsd: number;
+  /** Present when the provider returned usage breakdown (e.g. OpenAI-compatible APIs). */
+  promptTokens?: number;
+  completionTokens?: number;
 }
 
 export interface SerializedDAGNode {

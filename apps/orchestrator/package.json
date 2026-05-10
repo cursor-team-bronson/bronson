@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@bronson/types": "file:../../packages/types",
+    "@supabase/supabase-js": "^2.49.1",
     "cors": "^2.8.5",
     "dotenv": "^17.4.2",
     "express": "^4.18.2",
