@@ -65,7 +65,11 @@ export interface GateDecision {
   approved: boolean; editedOutput?: string; reason?: string;
 }
 export interface AgentRunOptions {
-  jobId: string; jobConfig: JobConfig; contextInput: string;
+  jobId: string;
+  jobConfig: JobConfig;
+  contextInput: string;
+  /** When aborted, in-flight chat.completions calls are cancelled (OpenAI SDK). */
+  abortSignal?: AbortSignal;
 }
 export interface AgentRunResult {
   output: string; tokensUsed: number; costUsd: number;

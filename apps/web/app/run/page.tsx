@@ -106,6 +106,8 @@ type ModelRunnerStepCardProps = {
   job: JobState | undefined;
   jobError: string | undefined;
   nowMs: number;
+  activeRunId: string | null;
+  onStopStep: (stepId: string) => void;
 };
 
 function ModelRunnerStepCard({
@@ -116,46 +118,71 @@ function ModelRunnerStepCard({
   job,
   jobError,
   nowMs,
+  activeRunId,
+  onStopStep,
 }: ModelRunnerStepCardProps) {
   const tokens = job?.tokensUsed;
   const durationMs = durationForJob(job, nowMs);
   const tokenLabel = typeof tokens === "number" ? tokens.toLocaleString() : "—";
   const timeLabel = formatDurationMs(durationMs);
   const cost = job?.costUsd;
+  const showStop =
+    Boolean(activeRunId) &&
+    (job?.status === "running" || (status === "running" && job === undefined));
 
   return (
     <li>
       <Card className="gap-0 py-0">
         <Collapsible defaultOpen={Boolean(jobError)} className="group">
-          <CollapsibleTrigger asChild>
-            <button
-              type="button"
-              className="hover:bg-muted/30 flex w-full flex-col gap-3 px-4 py-4 text-left transition-colors sm:flex-row sm:items-center sm:justify-between sm:gap-4"
-            >
-              <div className="min-w-0 flex-1 space-y-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  <p className="font-mono text-sm font-semibold text-foreground">{stepId}</p>
-                  <StatusLight status={status} />
+          <div className="flex items-stretch gap-2 border-b border-border/60">
+            <CollapsibleTrigger asChild>
+              <button
+                type="button"
+                className="hover:bg-muted/30 flex min-w-0 flex-1 flex-col gap-3 px-4 py-4 text-left transition-colors sm:flex-row sm:items-center sm:justify-between sm:gap-4"
+              >
+                <div className="min-w-0 flex-1 space-y-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="font-mono text-sm font-semibold text-foreground">{stepId}</p>
+                    <StatusLight status={status} />
+                  </div>
+                  {stepType ? (
+                    <p className="text-xs text-muted-foreground">
+                      type: <span className="font-mono text-foreground">{stepType}</span>
+                    </p>
+                  ) : null}
+                  <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs tabular-nums text-muted-foreground">
+                    <span>
+                      <span className="font-medium text-foreground/80">Tokens</span>{" "}
+                      <span className="font-mono text-foreground">{tokenLabel}</span>
+                    </span>
+                    <span>
+                      <span className="font-medium text-foreground/80">Time</span>{" "}
+                      <span className="font-mono text-foreground">{timeLabel}</span>
+                    </span>
+                  </div>
                 </div>
-                {stepType ? (
-                  <p className="text-xs text-muted-foreground">
-                    type: <span className="font-mono text-foreground">{stepType}</span>
-                  </p>
-                ) : null}
-                <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs tabular-nums text-muted-foreground">
-                  <span>
-                    <span className="font-medium text-foreground/80">Tokens</span>{" "}
-                    <span className="font-mono text-foreground">{tokenLabel}</span>
-                  </span>
-                  <span>
-                    <span className="font-medium text-foreground/80">Time</span>{" "}
-                    <span className="font-mono text-foreground">{timeLabel}</span>
-                  </span>
-                </div>
+                <ChevronDown className="text-muted-foreground size-4 shrink-0 self-end transition-transform duration-200 group-data-[state=open]:rotate-180 sm:self-center" />
+              </button>
+            </CollapsibleTrigger>
+            {showStop ? (
+              <div className="flex shrink-0 flex-col justify-center pr-3">
+                <Button
+                  type="button"
+                  variant="destructive"
+                  size="sm"
+                  className="h-8 whitespace-nowrap"
+                  title="Stop the in-flight model request for this step (cancels the current CLōD HTTP call)"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onStopStep(stepId);
+                  }}
+                >
+                  Stop
+                </Button>
               </div>
-              <ChevronDown className="text-muted-foreground size-4 shrink-0 self-end transition-transform duration-200 group-data-[state=open]:rotate-180 sm:self-center" />
-            </button>
-          </CollapsibleTrigger>
+            ) : null}
+          </div>
           <CollapsibleContent>
             <CardContent className="border-border space-y-4 border-t pt-4 pb-4">
               <p className="text-xs text-muted-foreground">
@@ -273,6 +300,44 @@ export default function RunPage() {
     return () => window.clearInterval(id);
   }, [isRunning]);
 
+  const fetchAndApplyRunState = useCallback(async (rid: string) => {
+    try {
+      const res = await fetch(`/api/runs/${rid}`);
+      if (!res.ok) return;
+      const runState = (await res.json()) as RunState;
+      setActiveRunStatus(runState.status);
+      setJobErrors(jobErrorsFromRun(runState));
+      setJobDetails({ ...runState.jobs });
+      setStatusByStep((prev) => {
+        const next = { ...prev };
+        for (const [jid, j] of Object.entries(runState.jobs)) {
+          next[jid] = mapJobStatus(j.status);
+        }
+        return next;
+      });
+      if (runState.status === "completed" || runState.status === "failed") {
+        setIsRunning(false);
+        eventSourceRef.current?.close();
+        eventSourceRef.current = null;
+      }
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const stopStep = useCallback(
+    async (stepId: string) => {
+      if (!activeRunId) return;
+      try {
+        await fetch(`/api/runs/${activeRunId}/jobs/${encodeURIComponent(stepId)}/stop`, { method: "POST" });
+      } catch {
+        /* ignore */
+      }
+      await fetchAndApplyRunState(activeRunId);
+    },
+    [activeRunId, fetchAndApplyRunState],
+  );
+
   const stop = useCallback(() => {
     abortRef.current = true;
     eventSourceRef.current?.close();
@@ -326,28 +391,7 @@ export default function RunPage() {
 
     const syncFromServer = async () => {
       if (abortRef.current) return;
-      try {
-        const res = await fetch(`/api/runs/${runId}`);
-        if (!res.ok) return;
-        const runState = (await res.json()) as RunState;
-        setActiveRunStatus(runState.status);
-        setJobErrors(jobErrorsFromRun(runState));
-        setJobDetails({ ...runState.jobs });
-        setStatusByStep((prev) => {
-          const next = { ...prev };
-          for (const [jid, j] of Object.entries(runState.jobs)) {
-            next[jid] = mapJobStatus(j.status);
-          }
-          return next;
-        });
-        if (runState.status === "completed" || runState.status === "failed") {
-          setIsRunning(false);
-          eventSourceRef.current?.close();
-          eventSourceRef.current = null;
-        }
-      } catch {
-        /* ignore */
-      }
+      await fetchAndApplyRunState(runId);
     };
 
     await syncFromServer();
@@ -396,7 +440,7 @@ export default function RunPage() {
       if (!abortRef.current) void syncFromServer();
       setIsRunning(false);
     };
-  }, [graph.nodes, isRunning, runnable, yamlText]);
+  }, [fetchAndApplyRunState, graph.nodes, isRunning, runnable, yamlText]);
 
   return (
     <main className="mx-auto flex min-h-0 w-full max-w-7xl flex-1 flex-col gap-8 px-5 py-8 sm:px-8 lg:py-12">
@@ -530,6 +574,8 @@ export default function RunPage() {
               job={jobDetails[stepId]}
               jobError={jobErrors[stepId]}
               nowMs={nowMs}
+              activeRunId={activeRunId}
+              onStopStep={(id) => void stopStep(id)}
             />
           ))}
         </ul>

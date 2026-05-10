@@ -39,7 +39,7 @@ export function assertClodConfigured(): void {
 }
 
 export async function runAgent(runId: string, options: AgentRunOptions, upstreamOutputs: Record<string, string>): Promise<AgentRunResult> {
-  const { jobId, jobConfig } = options;
+  const { jobId, jobConfig, abortSignal } = options;
   const contextSection = buildJobContext(upstreamOutputs, jobConfig.context_budget);
   let userMessage = contextSection ? `${contextSection}\n\n---\n\n${jobConfig.prompt}` : jobConfig.prompt;
 
@@ -60,15 +60,25 @@ export async function runAgent(runId: string, options: AgentRunOptions, upstream
   let totalCost = 0;
 
   for (let round = 0; round < maxRounds; round++) {
+    abortSignal?.throwIfAborted();
     let response;
     try {
-      response = await clod.chat.completions.create({
-        model,
-        messages,
-        tools: resolved.tools.length ? resolved.tools : undefined,
-        tool_choice: resolved.tools.length ? "auto" : undefined,
-      });
+      response = await clod.chat.completions.create(
+        {
+          model,
+          messages,
+          tools: resolved.tools.length ? resolved.tools : undefined,
+          tool_choice: resolved.tools.length ? "auto" : undefined,
+        },
+        { signal: abortSignal ?? undefined },
+      );
     } catch (e) {
+      if (e instanceof OpenAI.APIUserAbortError) {
+        throw new Error("Stopped by user");
+      }
+      if (e instanceof Error && e.name === "AbortError") {
+        throw new Error("Stopped by user");
+      }
       throw new Error(formatClodRequestError(e));
     }
 

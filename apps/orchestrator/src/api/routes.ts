@@ -1,6 +1,7 @@
 import { Router, Request, Response } from "express";
 import { normalizeWorkflowYamlInput, parseWorkflowString } from "../parser/yaml-parser.js";
 import { startRun, getRun, listRuns, retryJobAndContinue } from "../orchestrator/run-manager.js";
+import { stopJobRequest } from "../orchestrator/job-abort-registry.js";
 import { gateManager } from "../gates/gate-manager.js";
 import { eventLog } from "../event-log/event-log.js";
 import { streamRunEvents } from "./sse.js";
@@ -30,6 +31,21 @@ router.post("/runs/:runId/jobs/:jobId/retry", async (req, res) => {
     return;
   }
   res.status(202).json({ ok: true, message: "Retry started in background" });
+});
+
+/** Abort the in-flight LLM HTTP request for this job (if the job is currently calling the model). */
+router.post("/runs/:runId/jobs/:jobId/stop", (req, res) => {
+  const run = getRun(req.params.runId);
+  if (!run) {
+    res.status(404).json({ error: "Run not found" });
+    return;
+  }
+  if (!run.jobs[req.params.jobId]) {
+    res.status(404).json({ error: "Unknown job id" });
+    return;
+  }
+  const aborted = stopJobRequest(req.params.runId, req.params.jobId);
+  res.json({ ok: true, aborted });
 });
 
 router.get("/runs/:runId", (req, res) => {

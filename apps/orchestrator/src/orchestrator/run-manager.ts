@@ -15,6 +15,7 @@ import {
   persistRunStart,
   persistRunStatus,
 } from "../persistence/supabase-job-store.js";
+import { attachJobAbort, detachJobAbort } from "./job-abort-registry.js";
 
 const runs = new Map<string, RunState>();
 
@@ -225,8 +226,13 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
       if (out) upstreamOutputs[dep] = out;
     }
 
+    const ac = attachJobAbort(run.runId, jobId);
     try {
-      const result = await runAgent(run.runId, { jobId, jobConfig, contextInput: "" }, upstreamOutputs);
+      const result = await runAgent(
+        run.runId,
+        { jobId, jobConfig, contextInput: "", abortSignal: ac.signal },
+        upstreamOutputs,
+      );
       let finalOutput = result.output;
 
       if (jobConfig.gate === "human") {
@@ -270,6 +276,16 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
       void persistJobRow(run.runId, { ...jobState });
       return;
     } catch (err) {
+      const msg = String(err);
+      if (msg.includes("Stopped by user")) {
+        jobState.retryCount = attempt;
+        jobState.status = "failed";
+        jobState.completedAt = new Date().toISOString();
+        jobState.error = "Stopped by user";
+        eventLog.append(run.runId, "JOB_FAILED", jobId, { error: jobState.error });
+        void persistJobRow(run.runId, { ...jobState });
+        return;
+      }
       jobState.retryCount = attempt;
       if (attempt < maxAttempts) {
         const delayMs = 500 * Math.pow(2, attempt - 1);
@@ -277,7 +293,7 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
         eventLog.append(run.runId, "JOB_RETRY_WARNING", jobId, {
           attempt,
           maxAttempts,
-          reason: String(err),
+          reason: msg,
           nextRetryDelayMs: delayMs,
         });
 
@@ -285,10 +301,12 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
       } else {
         jobState.status = "failed";
         jobState.completedAt = new Date().toISOString();
-        jobState.error = String(err);
-        eventLog.append(run.runId, "JOB_FAILED", jobId, { error: String(err) });
+        jobState.error = msg;
+        eventLog.append(run.runId, "JOB_FAILED", jobId, { error: msg });
         void persistJobRow(run.runId, { ...jobState });
       }
+    } finally {
+      detachJobAbort(run.runId, jobId);
     }
   }
 }
