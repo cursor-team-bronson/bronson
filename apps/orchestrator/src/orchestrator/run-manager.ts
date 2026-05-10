@@ -185,7 +185,7 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
         run.status = "gate_pending";
         await persistWorkflowRunStatus(run.runId, "gate_pending");
         await persistStepGatePending(run.runId, jobId, result.output);
-        appendGateEvent(run.runId, "GATE_PENDING", jobId, { proposedOutput: result.output });
+        appendVersioned(run.runId, "GATE_PENDING", jobId, { proposedOutput: result.output });
         
         const decision = await gateManager.waitForApproval({
           runId: run.runId,
@@ -198,7 +198,7 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
           jobState.status = "failed";
           jobState.error = decision.reason ?? "Gate rejected";
           await persistStepGateRejected(run.runId, jobId, decision.reason);
-          appendGateEvent(run.runId, "GATE_REJECTED", jobId, { reason: decision.reason });
+          appendVersioned(run.runId, "GATE_REJECTED", jobId, { reason: decision.reason });
           return;
         }
 
@@ -207,7 +207,7 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
         await persistStepGateApproved(run.runId, jobId);
         run.status = gateManager.listPending(run.runId).length > 0 ? "gate_pending" : "running";
         await persistWorkflowRunStatus(run.runId, run.status);
-        appendGateEvent(run.runId, "GATE_APPROVED", jobId);
+        appendVersioned(run.runId, "GATE_APPROVED", jobId);
       }
 
       jobState.status = "completed";
