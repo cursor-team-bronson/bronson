@@ -206,6 +206,7 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
           proposedOutput: result.output,
           context: Object.values(upstreamOutputs).join("\n\n"),
         });
+        if (killed.has(run.runId)) return;
 
         if (!decision.approved) {
           jobState.status = "failed";
@@ -247,11 +248,13 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
         try {
           await budgetTracker.waitForFunding(run.runId, jobId);
         } catch (fundErr) {
+          if (killed.has(run.runId)) return;
           jobState.status = "failed";
           jobState.error = String(fundErr);
           appendVersioned(run.runId, "JOB_FAILED", jobId, { error: String(fundErr) });
           return;
         }
+        if (killed.has(run.runId)) return;
 
         const stillAwaiting = budgetTracker.listAwaiting(run.runId).some(j => j.jobId !== jobId);
         run.status = stillAwaiting ? "awaiting_funding" : "running";
@@ -271,6 +274,7 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
               proposedOutput: finalOutput,
               context: Object.values(upstreamOutputs).join("\n\n"),
             });
+            if (killed.has(run.runId)) return;
 
             if (!decision.approved) {
               jobState.status = "failed";
@@ -312,6 +316,7 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
           nextRetryDelayMs: delayMs,
         });
         await new Promise(r => setTimeout(r, delayMs));
+        if (killed.has(run.runId)) return;
       } else {
         jobState.status = "failed";
         jobState.error = String(err);
