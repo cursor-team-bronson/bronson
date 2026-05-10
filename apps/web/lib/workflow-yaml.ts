@@ -45,8 +45,9 @@ steps:
  */
 export const essayWorkflowYaml = String.raw`# Essay writer / reviewer — three cycles (six sequential jobs).
 #
-# Each job uses on_failure: retry so the DAG keeps going after a failure; downstream jobs then
-# receive failure transcripts from upstream via context (see orchestrator run-manager + event log).
+# Each job sets on_failure: retry so the DAG continues the wave (dependents still run and see upstream
+# failure context). That is separate from max_retries (default 0): add max_retries: N only if you want
+# the same job re-invoked after failure.
 #
 # Prerequisites (apps/orchestrator/.env):
 #   ALLOW_SHELL_TOOL=true
@@ -219,6 +220,8 @@ export const dreamStateWorkflowYaml = String.raw`# dream-state — async memory 
 # Shell scan jobs use Unix-style commands; on Windows prefer Git Bash/WSL or edit prompts to PowerShell.
 # Models must match your CLōD catalog ids exactly. Scan/emit jobs use DeepSeek V3.2 (same tier as analyze);
 # if that alias is unavailable, change each model: field or set DEFAULT_AGENT_MODEL and omit model per job.
+#
+# on_failure: retry = continue the DAG (dependents receive failure context); max_retries = re-run this job.
 
 name: dream-state
 

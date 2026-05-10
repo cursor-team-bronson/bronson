@@ -16,11 +16,13 @@ function orchestratorBase(): string {
   return (process.env.ORCHESTRATOR_URL ?? "http://127.0.0.1:3001").replace(/\/$/, "");
 }
 
+/** Only the orchestrator run event stream — avoid disabling timeouts for unrelated .../events routes. */
 function isRunEventsSse(req: NextRequest, pathSegments: string[]): boolean {
   return (
     req.method === "GET" &&
-    pathSegments.length >= 3 &&
-    pathSegments[pathSegments.length - 1] === "events"
+    pathSegments.length === 3 &&
+    pathSegments[0] === "runs" &&
+    pathSegments[2] === "events"
   );
 }
 

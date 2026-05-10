@@ -18,6 +18,8 @@
 # Shell scan jobs use Unix-style commands; on Windows prefer Git Bash/WSL or edit prompts to PowerShell.
 # Models must match your CLōD catalog ids exactly. Scan/emit jobs use DeepSeek V3.2 (same tier as analyze);
 # if that alias is unavailable, change each model: field or set DEFAULT_AGENT_MODEL and omit model per job.
+#
+# on_failure: retry = continue the DAG (dependents receive failure context); max_retries = re-run this job.
 
 name: dream-state
 

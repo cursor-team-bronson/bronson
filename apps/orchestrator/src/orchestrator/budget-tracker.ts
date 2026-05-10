@@ -1,5 +1,13 @@
 import { createCheckoutIntent } from "../integrations/allscale.js";
 
+/** Thrown when budget is exceeded but AllScale checkout cannot be created — non-retryable at job level (config/credentials). */
+export class BudgetCheckoutUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "BudgetCheckoutUnavailableError";
+  }
+}
+
 export class BudgetExceededError extends Error {
   constructor(
     readonly runId: string,
@@ -86,7 +94,7 @@ class BudgetTracker {
       process.env.BRONSON_BUDGET_ON_EXCEED?.trim().toLowerCase() === "await_funding";
 
     if (checkoutBroken && !forceAwaitFunding) {
-      throw new Error(
+      throw new BudgetCheckoutUnavailableError(
         `Budget exceeded for job "${jobId}" (spent $${entry.spentUsd.toFixed(4)} vs limit $${entry.limitUsd.toFixed(4)}). ` +
           `Payment checkout could not be created. Configure AllScale credentials, increase budget_usd in YAML, ` +
           `or set BRONSON_BUDGET_ON_EXCEED=await_funding to pause until manual top-up.`,

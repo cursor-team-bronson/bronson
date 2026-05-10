@@ -1,7 +1,8 @@
 # Essay writer / reviewer — three cycles (six sequential jobs).
 #
-# Each job uses on_failure: retry so the DAG keeps going after a failure; downstream jobs then
-# receive failure transcripts from upstream via context (see orchestrator run-manager + event log).
+# Each job sets on_failure: retry so the DAG continues the wave (dependents still run and see upstream
+# failure context). That is separate from max_retries (default 0): add max_retries: N only if you want
+# the same job re-invoked after failure.
 #
 # Prerequisites (apps/orchestrator/.env):
 #   ALLOW_SHELL_TOOL=true

@@ -4,7 +4,11 @@ import { resolveDAG } from "../parser/dag-resolver.js";
 import { eventLog, VersionMismatchError } from "../event-log/event-log.js";
 import { gateManager } from "../gates/gate-manager.js";
 import { runAgent } from "../agent-runner/clod-client.js";
-import { budgetTracker, BudgetExceededError } from "./budget-tracker.js";
+import {
+  budgetTracker,
+  BudgetExceededError,
+  BudgetCheckoutUnavailableError,
+} from "./budget-tracker.js";
 
 const runs = new Map<string, RunState>();
 
@@ -90,7 +94,7 @@ export async function startRun(config: WorkflowConfig): Promise<RunState> {
 
   executeRun(run, config, dag.executionWaves).catch(err => {
     run.status = "failed";
-    eventLog.append(runId, "RUN_FAILED", undefined, { error: String(err) });
+    appendVersioned(runId, "RUN_FAILED", undefined, { error: String(err) });
   });
 
   return run;
@@ -131,7 +135,7 @@ async function executeRun(run: RunState, config: WorkflowConfig, waves: string[]
     ) {
       run.status = "failed";
       cancelAwaitingJobs(run, "Run halted due to job failure");
-      eventLog.append(run.runId, "RUN_FAILED", undefined, { reason: "Job failed with on_failure: halt" });
+      appendVersioned(run.runId, "RUN_FAILED", undefined, { reason: "Job failed with on_failure: halt" });
       return;
     }
   }
@@ -141,7 +145,7 @@ async function executeRun(run: RunState, config: WorkflowConfig, waves: string[]
     run.status = "failed";
     run.completedAt = new Date().toISOString();
     cancelAwaitingJobs(run, "Run failed");
-    eventLog.append(run.runId, "RUN_FAILED", undefined, {
+    appendVersioned(run.runId, "RUN_FAILED", undefined, {
       reason: "One or more jobs failed after retries",
       failedJobIds,
     });
@@ -228,6 +232,13 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
       });
       return;
     } catch (err) {
+      if (err instanceof BudgetCheckoutUnavailableError) {
+        jobState.status = "failed";
+        jobState.error = err.message;
+        appendVersioned(run.runId, "JOB_FAILED", jobId, { error: err.message });
+        return;
+      }
+
       if (err instanceof BudgetExceededError) {
         jobState.status = "awaiting_funding";
         jobState.checkoutUrl = err.checkoutUrl;
