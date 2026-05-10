@@ -24,6 +24,8 @@ interface JobBudgetState {
   resolve?: () => void;
   reject?: (e: Error) => void;
   awaiting: boolean;
+  /** Set to true after topUp resolves the gate; prevents duplicate webhook deliveries from double-decrementing. */
+  settled: boolean;
 }
 
 class BudgetTracker {
@@ -39,6 +41,7 @@ class BudgetTracker {
       limitUsd,
       spentUsd: 0,
       awaiting: false,
+      settled: false,
     });
   }
 
@@ -57,7 +60,7 @@ class BudgetTracker {
       try {
         const checkout = await createCheckoutIntent({
           amountUsdc: topupAmount,
-          orderId: `${runId}-${jobId}-${Date.now()}`,
+          orderId: `${runId}::${jobId}::${Date.now()}`,
           description: `Budget top-up for job "${jobId}" in run "${runId}"`,
         });
         entry.intentId = checkout.intent_id;
@@ -88,18 +91,21 @@ class BudgetTracker {
     if (!entry) return Promise.resolve();
 
     entry.awaiting = true;
+    entry.settled = false;
     return new Promise<void>((resolve, reject) => {
       entry.resolve = resolve;
       entry.reject = reject;
     });
   }
 
-  /** Called when AllScale webhook confirms payment. Resets spend and resumes execution. */
+  /** Called when AllScale webhook confirms payment. Idempotent — duplicate deliveries are ignored. */
   topUp(runId: string, jobId: string, amountUsd: number) {
     const k = this.key(runId, jobId);
     const entry = this.state.get(k);
     if (!entry) throw new Error(`No budget entry for ${runId}::${jobId}`);
+    if (entry.settled) return; // duplicate webhook delivery — no-op
 
+    entry.settled = true;
     entry.spentUsd = Math.max(0, entry.spentUsd - amountUsd);
     entry.intentId = undefined;
     entry.checkoutUrl = undefined;

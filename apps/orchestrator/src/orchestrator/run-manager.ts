@@ -81,7 +81,16 @@ export function topUpJobBudget(runId: string, jobId: string, amountUsd: number) 
 
   budgetTracker.topUp(runId, jobId, amountUsd);
   jobState.checkoutUrl = undefined;
-  eventLog.append(runId, "BUDGET_FUNDED", jobId, { amountUsd });
+  for (;;) {
+    const expectedVersion = eventLog.getLastVersion(runId);
+    try {
+      eventLog.append(runId, "BUDGET_FUNDED", jobId, { amountUsd }, expectedVersion);
+      break;
+    } catch (e) {
+      if (e instanceof VersionMismatchError) continue;
+      throw e;
+    }
+  }
 }
 
 async function executeRun(run: RunState, config: WorkflowConfig, waves: string[][]): Promise<void> {

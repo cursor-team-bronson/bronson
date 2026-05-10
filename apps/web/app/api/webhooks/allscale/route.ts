@@ -51,7 +51,9 @@ export async function POST(req: Request): Promise<Response> {
       .update(canonical)
       .digest("base64");
 
-  if (sigHeader !== expected) {
+  const sigBuf = Buffer.from(sigHeader);
+  const expBuf = Buffer.from(expected);
+  if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
     return new Response("Bad signature", { status: 401 });
   }
 
@@ -75,17 +77,16 @@ export async function POST(req: Request): Promise<Response> {
     return new Response("OK", { status: 200 });
   }
 
-  // order_id format: "<runId>-<jobId>-<timestamp>" (set in budget-tracker.ts)
-  // Extract runId and jobId — everything before the last "-<timestamp>" suffix
-  const parts = orderId.split("-");
-  if (parts.length < 3) {
+  // order_id format: "<runId>::<jobId>::<timestamp>" (set in budget-tracker.ts)
+  // Uses :: as separator so UUIDs and hyphenated jobIds parse correctly.
+  const sep1 = orderId.indexOf("::");
+  const sep2 = orderId.lastIndexOf("::");
+  if (sep1 === -1 || sep1 === sep2) {
     console.error(`AllScale webhook: cannot parse order_id "${orderId}"`);
     return new Response("OK", { status: 200 });
   }
-
-  // Last segment is the epoch ms timestamp, second-to-last is jobId, everything before is runId
-  const jobId = parts[parts.length - 2];
-  const runId = parts.slice(0, parts.length - 2).join("-");
+  const runId = orderId.slice(0, sep1);
+  const jobId = orderId.slice(sep1 + 2, sep2);
 
   try {
     const res = await fetch(`${ORCHESTRATOR}/api/runs/${runId}/jobs/${jobId}/fund`, {
