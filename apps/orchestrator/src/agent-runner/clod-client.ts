@@ -4,6 +4,7 @@ import { buildJobContext } from "./context-router.js";
 import { eventLog } from "../event-log/event-log.js";
 import { resolveTools } from "./tool-registry.js";
 import { resolveAgentModel } from "./resolve-model.js";
+import { budgetTracker, BudgetExceededError } from "../orchestrator/budget-tracker.js";
 
 const clod = new OpenAI({
   baseURL: process.env.CLOD_BASE_URL ?? "https://api.clod.io/v1",
@@ -65,7 +66,11 @@ function resolveFinalAssistantOutput(
   return chunks[chunks.length - 1] ?? last;
 }
 
-export async function runAgent(runId: string, options: AgentRunOptions, upstreamOutputs: Record<string, string>): Promise<AgentRunResult> {
+export async function runAgent(
+  runId: string,
+  options: AgentRunOptions,
+  upstreamOutputs: Record<string, string>,
+): Promise<AgentRunResult> {
   const { jobId, jobConfig, priorAttemptErrors, upstreamKind } = options;
   const contextSection = buildJobContext(upstreamOutputs, jobConfig.context_budget, upstreamKind);
   const attemptSection =
@@ -76,7 +81,10 @@ export async function runAgent(runId: string, options: AgentRunOptions, upstream
   eventLog.append(runId, "JOB_STARTED", jobId);
 
   const toolNames = jobConfig.tools ?? [];
-  const resolved = toolNames.length > 0 ? resolveTools(toolNames) : { tools: [] as OpenAI.Chat.ChatCompletionTool[], execute: new Map<string, (a: Record<string, unknown>) => Promise<string>>() };
+  const resolved =
+    toolNames.length > 0
+      ? resolveTools(toolNames)
+      : { tools: [] as OpenAI.Chat.ChatCompletionTool[], execute: new Map<string, (a: Record<string, unknown>) => Promise<string>>() };
 
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [{ role: "user", content: userMessage }];
   const maxRounds = jobConfig.tool_rounds_max ?? 12;
@@ -104,6 +112,26 @@ export async function runAgent(runId: string, options: AgentRunOptions, upstream
 
     const msg = response.choices[0]?.message;
     if (!msg) throw new Error("No assistant message in completion response");
+
+    try {
+      await budgetTracker.deduct(runId, jobId, Number((response as { cost?: number }).cost ?? 0));
+    } catch (err) {
+      if (err instanceof BudgetExceededError) {
+        const isFinalAnswer = !msg.tool_calls?.length && msg.content != null;
+        throw new BudgetExceededError(
+          err.runId,
+          err.jobId,
+          err.spentUsd,
+          err.limitUsd,
+          err.checkoutUrl,
+          err.intentId,
+          isFinalAnswer ? msg.content! : undefined,
+          totalTokens,
+          totalCost,
+        );
+      }
+      throw err;
+    }
 
     messages.push({
       role: "assistant",
