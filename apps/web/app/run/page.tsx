@@ -661,7 +661,9 @@ export default function RunPage() {
             });
           }
           if (evt.type === "BUDGET_FUNDED" || evt.type === "JOB_RESUMED") {
-            setBudgetAlert(null);
+            setBudgetAlert((prev) =>
+              prev && evt.jobId && prev.jobId === evt.jobId ? null : prev,
+            );
           }
           if (evt.type === "RUN_COMPLETED" || evt.type === "RUN_FAILED") {
             setBudgetAlert(null);

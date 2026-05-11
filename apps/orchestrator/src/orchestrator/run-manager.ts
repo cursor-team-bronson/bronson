@@ -345,9 +345,6 @@ function cancelAwaitingJobs(run: RunState, reason: string): void {
   const now = new Date().toISOString();
   const active: JobStatus[] = ["pending", "running", "gate_pending", "gate_approved", "awaiting_funding"];
   for (const j of Object.values(run.jobs)) {
-    if (j.status === "awaiting_funding") {
-      budgetTracker.cancelFunding(run.runId, j.jobId, reason);
-    }
     if (active.includes(j.status)) {
       if (j.status === "awaiting_funding") {
         budgetTracker.cancelFunding(run.runId, j.jobId, reason);
@@ -610,6 +607,8 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
       await persistJobRow(run.runId, { ...jobState });
       return;
     } catch (err) {
+      if (killed.has(run.runId)) return;
+
       if (err instanceof BudgetCheckoutUnavailableError) {
         jobState.status = "failed";
         jobState.completedAt = new Date().toISOString();
@@ -620,7 +619,6 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
       }
 
       if (err instanceof BudgetExceededError) {
-        if (killed.has(run.runId)) return;
         jobState.status = "awaiting_funding";
         jobState.checkoutUrl = err.checkoutUrl;
         run.status = "awaiting_funding";
