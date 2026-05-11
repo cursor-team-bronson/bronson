@@ -501,6 +501,11 @@ export async function retryJobAndContinue(
 
   const { abandon, releaseLease } = await acquireRunExecutionLease(runId);
 
+  if (killed.has(runId)) {
+    abandon();
+    return { error: "Run was killed during lease acquisition" };
+  }
+
   const abandonClaim = (error: string): { error: string } => {
     abandon();
     return { error };
@@ -510,6 +515,8 @@ export async function retryJobAndContinue(
     let run = getRun(runId);
     if (!run) run = (await hydrateRunFromDb(runId)) ?? undefined;
     if (!run) return abandonClaim("Run not found");
+
+    if (killed.has(runId)) return abandonClaim("Run was killed");
 
     const snap = await fetchRunSnapshot(runId);
     if (!snap) return abandonClaim("Run snapshot not found in database");
@@ -525,6 +532,8 @@ export async function retryJobAndContinue(
     if (run.jobs[jobId].status !== "failed") {
       return abandonClaim(`Job is not failed (status=${run.jobs[jobId].status}); only failed jobs can be retried.`);
     }
+
+    if (killed.has(runId)) return abandonClaim("Run was killed");
 
     run.jobs[jobId] = { jobId, status: "pending", retryCount: 0 };
     run.status = "running";
