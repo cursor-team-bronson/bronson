@@ -40,8 +40,10 @@ const runExecutionPromises = new Map<string, Promise<void>>();
 function trackRunExecution(runId: string, p: Promise<void>): void {
   runExecutionPromises.set(runId, p);
   void p.finally(() => {
-    if (runExecutionPromises.get(runId) === p) runExecutionPromises.delete(runId);
-    killed.delete(runId);
+    if (runExecutionPromises.get(runId) === p) {
+      runExecutionPromises.delete(runId);
+      killed.delete(runId);
+    }
   });
 }
 
