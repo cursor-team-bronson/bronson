@@ -23,6 +23,7 @@ steps:
   - id: plan-task
     type: llm
     prompt: Decompose the request into parallel workstreams.
+    budget_usd: 0.05
   - id: spawn-agent-swarm
     type: fan_out
     depends_on: plan-task
@@ -32,16 +33,19 @@ steps:
     role: research
     depends_on: spawn-agent-swarm
     ai_gate_after: spawn-agent-swarm
+    budget_usd: 0.10
   - id: agent-implement
     type: agent
     role: implement
     depends_on: spawn-agent-swarm
     ai_gate_after: spawn-agent-swarm
+    budget_usd: 0.10
   - id: agent-qa
     type: agent
     role: qa
     depends_on: spawn-agent-swarm
     ai_gate_after: spawn-agent-swarm
+    budget_usd: 0.10
   - id: merge-agent-outputs
     type: llm
     depends_on:
@@ -49,6 +53,7 @@ steps:
       - agent-implement
       - agent-qa
     prompt: Merge the three agent traces into one coherent deliverable.
+    budget_usd: 0.05
   - id: human-release
     type: human_gate
     depends_on: merge-agent-outputs
@@ -110,6 +115,7 @@ jobs:
     gate: auto
     on_failure: retry
     context_budget: 12000
+    budget_usd: 0.10
 
   review_cycle_1:
     model: Gemma 3N E4B IT
@@ -134,6 +140,7 @@ jobs:
     on_failure: retry
     # Gemma 3N has a 32k context window — keep upstream injection moderate.
     context_budget: 8000
+    budget_usd: 0.05
 
   write_cycle_2:
     model: DeepSeek V3.2
