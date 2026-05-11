@@ -220,6 +220,42 @@ jobs:
 `;
 
 /**
+ * Finance demo with budget_usd caps and human gates — shows budget popup + AllScale integration.
+ */
+export const financeBudgetDemoYaml = String.raw`name: "Finance: Polymarket Trade Pipeline"
+jobs:
+  research_market:
+    prompt: >
+      Search Polymarket for active prediction markets about the Federal Reserve
+      interest rate decision. Return the top 3 markets with their current YES/NO
+      prices, 24h volume, and liquidity. Format as JSON.
+    model: "DeepSeek V3"
+    tools: []
+    budget_usd: 0.05
+
+  propose_trade:
+    prompt: >
+      Based on the research output, propose a single trade. Pick the market with
+      the strongest signal. Output JSON: { market_question, side: "YES"|"NO",
+      contracts: number, price_per_contract: number, total_cost_usdc: number,
+      rationale: string }. Max total cost: $50 USDC.
+    model: "DeepSeek V3"
+    depends_on: ["research_market"]
+    budget_usd: 0.05
+    gate: human
+
+  execute_trade:
+    prompt: >
+      The human has approved the trade. Log the execution details: market,
+      side, contracts, cost. Output a confirmation receipt as JSON with a
+      simulated tx_hash and timestamp.
+    model: "DeepSeek V3"
+    depends_on: ["propose_trade"]
+    gate: human
+    budget_usd: 0.02
+`;
+
+/**
  * Mirrors `examples/dream-state.yaml` — run `node scripts/sync-dream-preset.mjs` after edits there.
  */
 export const dreamStateWorkflowYaml = String.raw`# dream-state — async memory consolidation & self-improvement (no human gate)

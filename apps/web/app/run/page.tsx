@@ -1,7 +1,7 @@
 "use client";
 
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BookOpen, CalendarClock, ChevronDown, ExternalLink, Play, RefreshCw, Square } from "lucide-react";
+import { BookOpen, CalendarClock, ChevronDown, DollarSign, ExternalLink, Play, RefreshCw, Square } from "lucide-react";
 import type { JobState, JobStatus, RunState, RunStatus } from "@bronson/types";
 
 function jobStepNeedsWork(status: JobStatus | undefined): boolean {
@@ -25,6 +25,7 @@ import {
   BRONSON_WORKFLOW_SCHEDULE_KEY,
   dreamStateWorkflowYaml,
   essayWorkflowYaml,
+  financeBudgetDemoYaml,
   LAST_MODEL_RUN_ID_STORAGE_KEY,
   parseDag,
   readStoredWorkflowYaml,
@@ -420,6 +421,16 @@ export default function RunPage() {
     setRunError(null);
     try {
       localStorage.setItem(WORKFLOW_YAML_STORAGE_KEY, dreamStateWorkflowYaml);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const loadFinancePreset = useCallback(() => {
+    setYamlText(financeBudgetDemoYaml);
+    setRunError(null);
+    try {
+      localStorage.setItem(WORKFLOW_YAML_STORAGE_KEY, financeBudgetDemoYaml);
     } catch {
       /* ignore */
     }
@@ -959,6 +970,17 @@ export default function RunPage() {
               >
                 <BookOpen className="size-3.5 opacity-80" aria-hidden />
                 Dream-state
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                className="gap-1.5 border border-border/60 bg-background/90 shadow-sm"
+                onClick={loadFinancePreset}
+                disabled={isRunning}
+              >
+                <DollarSign className="size-3.5 opacity-80" aria-hidden />
+                Budget demo
               </Button>
               <Button
                 type="button"
