@@ -52,13 +52,31 @@ npm run typecheck
 
 See [`docs/AGENT_CONTEXT.md`](docs/AGENT_CONTEXT.md) for architecture, YAML schema, API tables, and onboarding notes.
 
-## Demo workflow
+## Demo workflows
 
-Example pipeline: [`examples/pr-review-pipeline.yaml`](examples/pr-review-pipeline.yaml).
+| Workflow | Features demonstrated | File |
+|---|---|---|
+| **Budget + AllScale** | Per-job `budget_usd` caps, AllScale USDC checkout, auto-resume on payment | [`examples/demo-finance-budget-gate.yaml`](examples/demo-finance-budget-gate.yaml) |
+| **Essay (shell)** | Multi-cycle writer/reviewer with `workspace_write` tool | [`examples/essay-write-review-3cycles.yaml`](examples/essay-write-review-3cycles.yaml) |
+| **PR review** | Basic DAG with `depends_on` | [`examples/pr-review-pipeline.yaml`](examples/pr-review-pipeline.yaml) |
+| **Shell tools** | `ALLOW_SHELL_TOOL=true` + `TOOL_SHELL_CWD` setup | [`examples/with-shell-tool.yaml`](examples/with-shell-tool.yaml) |
 
-Shell / CLōD tools POC: [`examples/with-shell-tool.yaml`](examples/with-shell-tool.yaml) — set **`ALLOW_SHELL_TOOL=true`** in the orchestrator environment (see [`apps/orchestrator/.env.example`](apps/orchestrator/.env.example)); details in [`docs/AGENT_CONTEXT.md`](docs/AGENT_CONTEXT.md).
+### Budget gates (USDC)
 
-Write a local proof file via shell: [`examples/shell-write-local.yaml`](examples/shell-write-local.yaml) + run [`examples/post-shell-test.ps1`](examples/post-shell-test.ps1) (set **`TOOL_SHELL_CWD`** to your repo `examples` folder so `bronson-shell-proof.txt` appears there).
+Set `budget_usd: 0.50` in a job. When spend exceeds the cap:
+1. Job suspends, UI shows AllScale checkout popup
+2. User tops up USDC → on-chain confirmation → webhook fires
+3. Job auto-resumes with funded budget
+
+Requires: `ALLSCALE_API_KEY`, `ALLSCALE_API_SECRET`, `ALLSCALE_BASE_URL` in orchestrator `.env`.
+
+### Kill switch (emergency stop)
+
+- **UI**: "Kill Run" button (Model runner) — stops orchestrator run, marks failed
+- **API**: `POST /runs/:id/stop`
+- **Per-job abort**: `POST /runs/:id/jobs/:jobId/stop` — aborts active LLM HTTP call
+
+Kill guards prevent stale events from appending after `RUN_FAILED`.
 
 ### Turborepo note
 

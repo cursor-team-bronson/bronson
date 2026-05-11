@@ -375,6 +375,14 @@ export default function DagPage() {
                 </p>
               </div>
               <div>
+                <p className="font-medium text-foreground">Budget caps</p>
+                <p className="mt-2 text-muted-foreground">
+                  Set <code className="font-mono text-foreground">budget_usd</code> on a step to cap its LLM
+                  spend. When the budget is exceeded the job pauses and an AllScale USDC
+                  checkout link is created. The job resumes automatically once paid.
+                </p>
+              </div>
+              <div>
                 <p className="font-medium text-foreground">Human / AI gates</p>
                 <p className="mt-2 text-muted-foreground">
                   On a step that already depends on another step, set{" "}

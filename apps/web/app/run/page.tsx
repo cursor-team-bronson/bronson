@@ -1,7 +1,7 @@
 "use client";
 
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BookOpen, CalendarClock, ChevronDown, ExternalLink, Play, RefreshCw, Square } from "lucide-react";
+import { BookOpen, CalendarClock, ChevronDown, DollarSign, ExternalLink, Play, RefreshCw, Square } from "lucide-react";
 import type { JobState, JobStatus, RunState, RunStatus } from "@bronson/types";
 
 function jobStepNeedsWork(status: JobStatus | undefined): boolean {
@@ -25,6 +25,7 @@ import {
   BRONSON_WORKFLOW_SCHEDULE_KEY,
   dreamStateWorkflowYaml,
   essayWorkflowYaml,
+  financeBudgetDemoYaml,
   LAST_MODEL_RUN_ID_STORAGE_KEY,
   parseDag,
   readStoredWorkflowYaml,
@@ -43,6 +44,14 @@ import {
 } from "@/components/ui/select";
 
 type StepStatus = "idle" | "running" | "ok" | "error";
+
+interface BudgetAlert {
+  jobId: string;
+  spentUsd: number;
+  limitUsd: number;
+  checkoutUrl: string;
+  intentId: string;
+}
 
 /** Matches cron-style runners; manual = interactive Run only. */
 type ScheduleCadence = "manual" | "hourly" | "daily" | "weekly";
@@ -344,6 +353,7 @@ export default function RunPage() {
   const [jobErrors, setJobErrors] = useState<Record<string, string>>({});
   /** Latest job payloads from GET /api/runs/:id (tokens, timing, output). */
   const [jobDetails, setJobDetails] = useState<Record<string, JobState>>({});
+  const [budgetAlert, setBudgetAlert] = useState<BudgetAlert | null>(null);
   /** DAG wave order from last GET /api/runs/:id (matches persisted run; editor order can differ after refresh). */
   const [serverStepOrder, setServerStepOrder] = useState<string[] | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -411,6 +421,16 @@ export default function RunPage() {
     setRunError(null);
     try {
       localStorage.setItem(WORKFLOW_YAML_STORAGE_KEY, dreamStateWorkflowYaml);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const loadFinancePreset = useCallback(() => {
+    setYamlText(financeBudgetDemoYaml);
+    setRunError(null);
+    try {
+      localStorage.setItem(WORKFLOW_YAML_STORAGE_KEY, financeBudgetDemoYaml);
     } catch {
       /* ignore */
     }
@@ -577,9 +597,17 @@ export default function RunPage() {
     async (stepId: string) => {
       if (!activeRunId) return;
       try {
-        await fetch(`/api/runs/${activeRunId}/jobs/${encodeURIComponent(stepId)}/stop`, { method: "POST" });
-      } catch {
-        /* ignore */
+        const res = await fetch(`/api/runs/${activeRunId}/jobs/${encodeURIComponent(stepId)}/stop`, {
+          method: "POST",
+        });
+        const body = await res.text().catch(() => "");
+        if (!res.ok) {
+          setRunError(`Stop job failed (${res.status}): ${body.slice(0, 240) || res.statusText}`);
+          return;
+        }
+      } catch (e) {
+        setRunError(e instanceof Error ? e.message : String(e));
+        return;
       }
       await fetchAndApplyRunState(activeRunId);
     },
@@ -593,6 +621,28 @@ export default function RunPage() {
     eventSourceRef.current = null;
     setIsRunning(false);
   }, [clearPoll]);
+
+  const requestKillRun = useCallback(async (): Promise<boolean> => {
+    if (!activeRunId) {
+      stop();
+      setBudgetAlert(null);
+      return true;
+    }
+    try {
+      const res = await fetch(`/api/runs/${activeRunId}/stop`, { method: "POST" });
+      const body = await res.text().catch(() => "");
+      if (!res.ok) {
+        setRunError(`Kill run failed (${res.status}): ${body.slice(0, 240) || res.statusText}`);
+        return false;
+      }
+      setBudgetAlert(null);
+      stop();
+      return true;
+    } catch (e) {
+      setRunError(e instanceof Error ? e.message : String(e));
+      return false;
+    }
+  }, [activeRunId, stop]);
 
   const beginWatchingRun = useCallback(
     (runId: string) => {
@@ -622,7 +672,15 @@ export default function RunPage() {
         try {
           const evt = JSON.parse(ev.data) as {
             type: string;
-            payload?: { reason?: string; error?: string };
+            jobId?: string;
+            payload?: {
+              reason?: string;
+              error?: string;
+              spentUsd?: number;
+              limitUsd?: number;
+              checkoutUrl?: string;
+              intentId?: string;
+            };
           };
           if (
             evt.type === "JOB_STARTED" ||
@@ -632,13 +690,31 @@ export default function RunPage() {
             evt.type === "GATE_PENDING" ||
             evt.type === "GATE_APPROVED" ||
             evt.type === "GATE_REJECTED" ||
+            evt.type === "BUDGET_EXCEEDED" ||
+            evt.type === "BUDGET_FUNDED" ||
+            evt.type === "JOB_RESUMED" ||
             evt.type === "RUN_RESUMED" ||
             evt.type === "RUN_COMPLETED" ||
             evt.type === "RUN_FAILED"
           ) {
             void syncFromServer();
           }
+          if (evt.type === "BUDGET_EXCEEDED" && evt.payload?.checkoutUrl) {
+            setBudgetAlert({
+              jobId: evt.jobId ?? "unknown",
+              spentUsd: evt.payload.spentUsd ?? 0,
+              limitUsd: evt.payload.limitUsd ?? 0,
+              checkoutUrl: evt.payload.checkoutUrl,
+              intentId: evt.payload.intentId ?? "",
+            });
+          }
+          if (evt.type === "BUDGET_FUNDED" || evt.type === "JOB_RESUMED") {
+            setBudgetAlert((prev) =>
+              prev && evt.jobId && prev.jobId === evt.jobId ? null : prev,
+            );
+          }
           if (evt.type === "RUN_COMPLETED" || evt.type === "RUN_FAILED") {
+            setBudgetAlert(null);
             clearPoll();
             es.close();
             if (eventSourceRef.current === es) eventSourceRef.current = null;
@@ -897,6 +973,17 @@ export default function RunPage() {
               </Button>
               <Button
                 type="button"
+                variant="secondary"
+                size="sm"
+                className="gap-1.5 border border-border/60 bg-background/90 shadow-sm"
+                onClick={loadFinancePreset}
+                disabled={isRunning}
+              >
+                <DollarSign className="size-3.5 opacity-80" aria-hidden />
+                Budget demo
+              </Button>
+              <Button
+                type="button"
                 variant="outline"
                 size="sm"
                 className="gap-1.5 border-border/70 bg-background/90 shadow-sm"
@@ -909,14 +996,25 @@ export default function RunPage() {
               <Separator orientation="vertical" className="hidden h-8 bg-accent-foreground/15 sm:block" />
               <Button
                 type="button"
-                variant="destructive"
+                variant="outline"
                 size="sm"
-                className="gap-1.5 shadow-sm"
+                className="gap-1.5 border-border/70 bg-background/90 shadow-sm"
                 onClick={stop}
                 disabled={!isRunning}
               >
                 <Square className="size-3.5 opacity-80" aria-hidden />
                 Stop
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                size="sm"
+                className="gap-1.5 shadow-sm"
+                onClick={() => void requestKillRun()}
+                disabled={!isRunning}
+              >
+                <Square className="size-3.5 opacity-80" aria-hidden />
+                Kill Run
               </Button>
               <Button
                 type="button"
@@ -940,6 +1038,76 @@ export default function RunPage() {
             <AlertDescription className="mt-1 font-mono text-xs leading-relaxed">{runError}</AlertDescription>
           </Alert>
         ) : null}
+
+      {budgetAlert ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="mx-4 w-full max-w-lg overflow-hidden rounded-2xl border border-red-500/30 bg-white shadow-2xl dark:bg-zinc-900">
+            <div className="bg-red-50 px-6 py-5 dark:bg-red-950/40">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-red-100 dark:bg-red-900/50">
+                  <span className="text-xl">🛑</span>
+                </div>
+                <div>
+                  <h2 className="text-lg font-bold text-red-900 dark:text-red-200">Spending Limit Reached</h2>
+                  <p className="text-sm text-red-700 dark:text-red-400">
+                    Agent paused — top up to continue
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-5 px-6 py-5">
+              <p className="text-sm text-zinc-600 dark:text-zinc-400">
+                Job <code className="rounded bg-zinc-100 px-1.5 py-0.5 font-mono text-xs font-semibold text-foreground dark:bg-zinc-800">{budgetAlert.jobId}</code> has
+                been <strong>automatically stopped</strong> after exceeding its budget.
+                No further API calls will be made until funded.
+              </p>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded-xl bg-red-50 p-4 dark:bg-red-950/30">
+                  <p className="text-xs font-medium text-red-600 dark:text-red-400">Amount spent</p>
+                  <p className="mt-1 text-2xl font-bold text-red-700 dark:text-red-300">${budgetAlert.spentUsd.toFixed(4)}</p>
+                </div>
+                <div className="rounded-xl bg-zinc-100 p-4 dark:bg-zinc-800">
+                  <p className="text-xs font-medium text-muted-foreground">Budget limit</p>
+                  <p className="mt-1 text-2xl font-bold text-foreground">${budgetAlert.limitUsd.toFixed(4)}</p>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <a
+                  href={budgetAlert.checkoutUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-3 text-sm font-bold text-white shadow-lg transition hover:bg-emerald-700 hover:shadow-xl"
+                >
+                  <span>💳</span> Top Up with USDC to Continue
+                </a>
+
+                <div className="flex gap-3">
+                  <button
+                    type="button"
+                    onClick={() => void requestKillRun()}
+                    className="flex-1 rounded-xl border border-red-300 bg-white px-4 py-2.5 text-sm font-semibold text-red-700 transition hover:bg-red-50 dark:border-red-800 dark:bg-zinc-800 dark:text-red-400 dark:hover:bg-red-950/30"
+                  >
+                    🛑 Kill Run
+                  </button>
+                  <button
+                    onClick={() => setBudgetAlert(null)}
+                    className="flex-1 rounded-xl border border-zinc-300 bg-white px-4 py-2.5 text-sm font-medium text-zinc-600 transition hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-700"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </div>
+
+              <p className="text-center text-xs text-muted-foreground">
+                Pay via AllScale → on-chain confirmation → webhook fires → agent resumes automatically
+              </p>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
         {activeRunId ? (
           <Alert className="border-accent/50 bg-accent/35 shadow-sm ring-1 ring-accent/20 dark:bg-accent/25">

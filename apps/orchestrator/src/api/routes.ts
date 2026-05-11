@@ -7,6 +7,9 @@ import {
   ensureRunLoaded,
   continuePersistedRun,
   getRun,
+  topUpJobBudget,
+  cancelJobFunding,
+  stopRun,
 } from "../orchestrator/run-manager.js";
 import { stopJobRequest } from "../orchestrator/job-abort-registry.js";
 import { gateManager } from "../gates/gate-manager.js";
@@ -190,6 +193,7 @@ router.get("/catalog/workflows/:workflowId", async (req, res) => {
   if (!row) { res.status(404).json({ error: "Workflow not found" }); return; }
   res.json(row);
 });
+
 router.get("/runs/:runId/budget/awaiting", (req, res) =>
   res.json(budgetTracker.listAwaiting(req.params.runId)),
 );
@@ -209,14 +213,21 @@ router.post("/runs/:runId/jobs/:jobId/fund", (req, res) => {
       res.status(400).json({ error: "amountUsd (positive number) required" });
       return;
     }
-    budgetTracker.topUp(req.params.runId, req.params.jobId, amountUsd, intentId);
+    topUpJobBudget(req.params.runId, req.params.jobId, amountUsd, intentId);
+    res.json({ ok: true });
+  } catch (err) { res.status(400).json({ error: String(err) }); }
+});
+
+router.post("/runs/:runId/stop", (req, res) => {
+  try {
+    stopRun(req.params.runId);
     res.json({ ok: true });
   } catch (err) { res.status(400).json({ error: String(err) }); }
 });
 
 router.post("/runs/:runId/jobs/:jobId/cancel-funding", (req, res) => {
   try {
-    budgetTracker.cancelFunding(req.params.runId, req.params.jobId);
+    cancelJobFunding(req.params.runId, req.params.jobId);
     res.json({ ok: true });
   } catch (err) { res.status(400).json({ error: String(err) }); }
 });

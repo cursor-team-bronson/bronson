@@ -38,6 +38,8 @@ interface JobBudgetState {
   awaiting: boolean;
   /** Set to true after topUp resolves the gate; prevents duplicate webhook deliveries from double-decrementing. */
   settled: boolean;
+  /** Set by cancelFunding when reject is not yet registered; waitForFunding rejects immediately on entry. */
+  cancelledReason?: string;
   timeoutHandle?: ReturnType<typeof setTimeout>;
 }
 
@@ -137,12 +139,27 @@ class BudgetTracker {
       return Promise.resolve();
     }
 
+    if (entry.cancelledReason) {
+      const reason = entry.cancelledReason;
+      entry.cancelledReason = undefined;
+      entry.awaiting = false;
+      return Promise.reject(new Error(reason));
+    }
+
     entry.awaiting = true;
     return new Promise<void>((resolve, reject) => {
       if (entry.settled) {
         entry.awaiting = false;
         entry.settled = false;
         resolve();
+        return;
+      }
+
+      if (entry.cancelledReason) {
+        const reason = entry.cancelledReason;
+        entry.cancelledReason = undefined;
+        entry.awaiting = false;
+        reject(new Error(reason));
         return;
       }
 
@@ -206,22 +223,26 @@ class BudgetTracker {
     return true;
   }
 
-  /** Cancel a pending funding gate — rejects the waitForFunding promise. */
+  /** Cancel a pending funding gate — rejects the waitForFunding promise or marks for immediate rejection on entry. */
   cancelFunding(runId: string, jobId: string, reason = "Funding cancelled") {
     const k = this.key(runId, jobId);
     const entry = this.state.get(k);
-    if (!entry?.reject) return;
+    if (!entry) return;
 
     if (entry.timeoutHandle) {
       clearTimeout(entry.timeoutHandle);
       entry.timeoutHandle = undefined;
     }
 
-    const reject = entry.reject;
-    entry.resolve = undefined;
-    entry.reject = undefined;
-    entry.awaiting = false;
-    reject(new Error(reason));
+    if (entry.reject) {
+      const reject = entry.reject;
+      entry.resolve = undefined;
+      entry.reject = undefined;
+      entry.awaiting = false;
+      reject(new Error(reason));
+    } else {
+      entry.cancelledReason = reason;
+    }
   }
 
   getState(runId: string, jobId: string): Readonly<JobBudgetState> | undefined {

@@ -8,7 +8,11 @@
  */
 
 import assert from "node:assert";
-import { budgetTracker, BudgetExceededError } from "./orchestrator/budget-tracker.js";
+import {
+  budgetTracker,
+  BudgetExceededError,
+  BudgetCheckoutUnavailableError,
+} from "./orchestrator/budget-tracker.js";
 import { gateManager } from "./gates/gate-manager.js";
 import { eventLog } from "./event-log/event-log.js";
 
@@ -39,16 +43,20 @@ await test("register + deduct within limit does not throw", async () => {
   await budgetTracker.deduct("r1", "j1", 0.4);
 });
 
-await test("deduct over limit throws BudgetExceededError", async () => {
+await test("deduct over limit throws BudgetExceededError or BudgetCheckoutUnavailableError", async () => {
   budgetTracker.register("r2", "j1", 0.10);
   await budgetTracker.deduct("r2", "j1", 0.05);
   try {
     await budgetTracker.deduct("r2", "j1", 0.10);
     assert.fail("Should have thrown");
   } catch (e) {
-    assert.ok(e instanceof BudgetExceededError);
-    assert.strictEqual(e.runId, "r2");
-    assert.strictEqual(e.jobId, "j1");
+    assert.ok(e instanceof BudgetExceededError || e instanceof BudgetCheckoutUnavailableError);
+    if (e instanceof BudgetExceededError) {
+      assert.strictEqual(e.runId, "r2");
+      assert.strictEqual(e.jobId, "j1");
+    } else {
+      assert.ok(String((e as BudgetCheckoutUnavailableError).message).includes("j1"));
+    }
   }
 });
 
@@ -277,6 +285,23 @@ await test("cancelFunding after topUp race — cancel is a no-op", async () => {
     setTimeout(() => reject(new Error("DEADLOCK after cancel")), 500),
   );
   await Promise.race([budgetTracker.waitForFunding("r14", "j1"), timeout]);
+});
+
+await test("cancelFunding before waitForFunding — waitForFunding rejects immediately (kill race)", async () => {
+  budgetTracker.register("r16", "j1", 0.01);
+  try { await budgetTracker.deduct("r16", "j1", 0.02); } catch {}
+
+  // Cancel arrives BEFORE waitForFunding is called (the race window during persist awaits)
+  budgetTracker.cancelFunding("r16", "j1", "Run killed by user");
+
+  // waitForFunding should reject immediately, not hang for 1h
+  try {
+    await budgetTracker.waitForFunding("r16", "j1");
+    assert.fail("Should have rejected");
+  } catch (e) {
+    assert.ok(e instanceof Error);
+    assert.ok((e as Error).message.includes("killed"));
+  }
 });
 
 await test("deduct with zero cost does not throw", async () => {

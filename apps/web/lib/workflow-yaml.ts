@@ -23,6 +23,7 @@ steps:
   - id: plan-task
     type: llm
     prompt: Decompose the request into parallel workstreams.
+    budget_usd: 0.05
   - id: spawn-agent-swarm
     type: fan_out
     depends_on: plan-task
@@ -32,16 +33,19 @@ steps:
     role: research
     depends_on: spawn-agent-swarm
     ai_gate_after: spawn-agent-swarm
+    budget_usd: 0.10
   - id: agent-implement
     type: agent
     role: implement
     depends_on: spawn-agent-swarm
     ai_gate_after: spawn-agent-swarm
+    budget_usd: 0.10
   - id: agent-qa
     type: agent
     role: qa
     depends_on: spawn-agent-swarm
     ai_gate_after: spawn-agent-swarm
+    budget_usd: 0.10
   - id: merge-agent-outputs
     type: llm
     depends_on:
@@ -49,6 +53,7 @@ steps:
       - agent-implement
       - agent-qa
     prompt: Merge the three agent traces into one coherent deliverable.
+    budget_usd: 0.05
   - id: human-release
     type: human_gate
     depends_on: merge-agent-outputs
@@ -110,6 +115,7 @@ jobs:
     gate: auto
     on_failure: retry
     context_budget: 12000
+    budget_usd: 0.10
 
   review_cycle_1:
     model: Gemma 3N E4B IT
@@ -134,6 +140,7 @@ jobs:
     on_failure: retry
     # Gemma 3N has a 32k context window — keep upstream injection moderate.
     context_budget: 8000
+    budget_usd: 0.05
 
   write_cycle_2:
     model: DeepSeek V3.2
@@ -210,6 +217,42 @@ jobs:
     gate: auto
     on_failure: retry
     context_budget: 12000
+`;
+
+/**
+ * Finance demo with budget_usd caps and human gates — shows budget popup + AllScale integration.
+ */
+export const financeBudgetDemoYaml = String.raw`name: "Finance: Polymarket Trade Pipeline"
+jobs:
+  research_market:
+    prompt: >
+      Search Polymarket for active prediction markets about the Federal Reserve
+      interest rate decision. Return the top 3 markets with their current YES/NO
+      prices, 24h volume, and liquidity. Format as JSON.
+    model: "DeepSeek V3"
+    tools: []
+    budget_usd: 0.05
+
+  propose_trade:
+    prompt: >
+      Based on the research output, propose a single trade. Pick the market with
+      the strongest signal. Output JSON: { market_question, side: "YES"|"NO",
+      contracts: number, price_per_contract: number, total_cost_usdc: number,
+      rationale: string }. Max total cost: $50 USDC.
+    model: "DeepSeek V3"
+    depends_on: ["research_market"]
+    budget_usd: 0.05
+    gate: human
+
+  execute_trade:
+    prompt: >
+      The human has approved the trade. Log the execution details: market,
+      side, contracts, cost. Output a confirmation receipt as JSON with a
+      simulated tx_hash and timestamp.
+    model: "DeepSeek V3"
+    depends_on: ["propose_trade"]
+    gate: human
+    budget_usd: 0.02
 `;
 
 /**
@@ -532,11 +575,14 @@ steps:
   - id: agent-a
     depends_on: orchestrate
     ai_gate_after: orchestrate
+    budget_usd: 0.10
   - id: agent-b
     depends_on: orchestrate
     ai_gate_after: orchestrate
+    budget_usd: 0.10
   - id: join
-    depends_on: [agent-a, agent-b]`;
+    depends_on: [agent-a, agent-b]
+    gate: human`;
 
 export type Step = {
   id: string;
@@ -552,6 +598,7 @@ export type Step = {
   human_gate_after?: string[] | string;
   ai_gate_after?: string[] | string;
   gate?: string;
+  budget_usd?: number;
 };
 
 export type GraphResult = {
@@ -783,6 +830,7 @@ export function toOrchestratorWorkflowYaml(text: string): OrchestratorYamlResult
       if (typeof step.model === "string" && step.model.trim()) job.model = step.model.trim();
       if (Array.isArray(step.tools) && step.tools.length) job.tools = step.tools;
       if (typeof step.tool_rounds_max === "number") job.tool_rounds_max = step.tool_rounds_max;
+      if (typeof step.budget_usd === "number" && step.budget_usd > 0) job.budget_usd = step.budget_usd;
 
       jobs[step.id] = job;
     }

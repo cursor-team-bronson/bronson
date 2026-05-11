@@ -96,6 +96,24 @@ jobs:
 
 ---
 
+## Kill Switch (Emergency Stop)
+
+Any running job or full run can be killed immediately:
+
+```bash
+# Kill an entire run (all jobs stop, run marked failed)
+POST /runs/:runId/stop
+
+# Kill a single job's LLM request (abort HTTP call)
+POST /runs/:runId/jobs/:jobId/stop
+```
+
+UI buttons:
+- **Stop listening** — Closes the SSE stream (local only, run continues)
+- **Kill Run** — Sends stop signal to orchestrator, run fails immediately
+
+---
+
 ## Example Patterns
 
 ### Linear pipeline (A → B → C)
