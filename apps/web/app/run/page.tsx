@@ -1,8 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CalendarClock, ChevronDown } from "lucide-react";
-import type { JobState, JobStatus, RunState, RunStatus } from "@bronson/types";
+import type { GateRequest, JobState, JobStatus, RunState, RunStatus } from "@bronson/types";
 
 function jobStepNeedsWork(status: JobStatus | undefined): boolean {
   if (status == null) return true;
@@ -339,6 +339,15 @@ export default function RunPage() {
   const [scheduleTime, setScheduleTime] = useState("09:00");
   const [scheduleSavedAt, setScheduleSavedAt] = useState<string | null>(null);
 
+  /** Orchestrator human gate — opens modal so we POST /gates/.../approve|reject (otherwise the run blocks forever). */
+  const [humanGate, setHumanGate] = useState<null | { runId: string; jobId: string; proposedOutput: string; context: string }>(
+    null,
+  );
+  const [gateEditedOutput, setGateEditedOutput] = useState("");
+  const [gateRejectReason, setGateRejectReason] = useState("");
+  const [gateBusy, setGateBusy] = useState(false);
+  const [gateActionError, setGateActionError] = useState<string | null>(null);
+
   const scheduleHint = useMemo(() => {
     switch (scheduleCadence) {
       case "manual":
@@ -446,6 +455,12 @@ export default function RunPage() {
   const order = graph.topoOrder.length > 0 ? graph.topoOrder : graph.nodes;
   const stepOrderForResume = serverStepOrder && serverStepOrder.length > 0 ? serverStepOrder : order;
 
+  /** Human gates need approve/reject via /gates — not "Resume run". */
+  const gatePendingBlocking = useMemo(
+    () => Object.values(jobDetails).some((j) => j?.status === "gate_pending"),
+    [jobDetails],
+  );
+
   const firstIncompleteStepId = useMemo(() => {
     if (!activeRunId || activeRunStatus === "completed") return null;
     for (const stepId of stepOrderForResume) {
@@ -510,6 +525,98 @@ export default function RunPage() {
     }
   }, []);
 
+  const refreshHumanGateFromServer = useCallback(async (rid: string) => {
+    try {
+      const res = await fetch(`/api/runs/${encodeURIComponent(rid)}/gates`);
+      if (!res.ok) return;
+      const list = (await res.json()) as GateRequest[];
+      if (list.length === 0) {
+        setHumanGate((cur) => (cur?.runId === rid ? null : cur));
+        return;
+      }
+      const g = list[0];
+      setHumanGate({ runId: g.runId, jobId: g.jobId, proposedOutput: g.proposedOutput, context: g.context });
+      setGateEditedOutput(g.proposedOutput);
+      setGateActionError(null);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!activeRunId) return;
+    const want =
+      activeRunStatus === "gate_pending" ||
+      Object.values(jobDetails).some((j) => j?.status === "gate_pending");
+    if (!want) {
+      startTransition(() => setHumanGate(null));
+      return;
+    }
+    startTransition(() => {
+      void refreshHumanGateFromServer(activeRunId);
+    });
+    const id = window.setInterval(() => {
+      startTransition(() => {
+        void refreshHumanGateFromServer(activeRunId);
+      });
+    }, 1600);
+    return () => clearInterval(id);
+  }, [activeRunId, activeRunStatus, jobDetails, refreshHumanGateFromServer]);
+
+  const submitGateApprove = useCallback(async () => {
+    if (!humanGate) return;
+    setGateBusy(true);
+    setGateActionError(null);
+    try {
+      const same = gateEditedOutput.trim() === humanGate.proposedOutput.trim();
+      const res = await fetch(
+        `/api/runs/${encodeURIComponent(humanGate.runId)}/gates/${encodeURIComponent(humanGate.jobId)}/approve`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(same ? {} : { editedOutput: gateEditedOutput }),
+        },
+      );
+      if (!res.ok) {
+        const b = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(b.error ?? `${res.status} ${res.statusText}`);
+      }
+      setHumanGate(null);
+      await fetchAndApplyRunState(humanGate.runId);
+    } catch (e) {
+      setGateActionError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setGateBusy(false);
+    }
+  }, [fetchAndApplyRunState, gateEditedOutput, humanGate]);
+
+  const submitGateReject = useCallback(async () => {
+    if (!humanGate) return;
+    setGateBusy(true);
+    setGateActionError(null);
+    try {
+      const res = await fetch(
+        `/api/runs/${encodeURIComponent(humanGate.runId)}/gates/${encodeURIComponent(humanGate.jobId)}/reject`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reason: gateRejectReason.trim() || undefined }),
+        },
+      );
+      if (!res.ok) {
+        const b = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(b.error ?? `${res.status} ${res.statusText}`);
+      }
+      setHumanGate(null);
+      setGateRejectReason("");
+      await fetchAndApplyRunState(humanGate.runId);
+    } catch (e) {
+      setGateActionError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setGateBusy(false);
+    }
+  }, [fetchAndApplyRunState, gateRejectReason, humanGate]);
+
   /** After reload: pull last run from API (orchestrator hydrates from Supabase when in-memory map is empty). */
   useEffect(() => {
     let cancelled = false;
@@ -555,6 +662,8 @@ export default function RunPage() {
     eventSourceRef.current?.close();
     eventSourceRef.current = null;
     setIsRunning(false);
+    setHumanGate(null);
+    setGateActionError(null);
   }, [clearPoll]);
 
   const beginWatchingRun = useCallback(
@@ -585,8 +694,17 @@ export default function RunPage() {
         try {
           const evt = JSON.parse(ev.data) as {
             type: string;
-            payload?: { reason?: string; error?: string };
+            jobId?: string;
+            payload?: { reason?: string; error?: string; proposedOutput?: string };
           };
+          if (evt.type === "GATE_PENDING" && typeof evt.jobId === "string") {
+            const pr = evt.payload?.proposedOutput;
+            if (typeof pr === "string") {
+              setHumanGate({ runId, jobId: evt.jobId, proposedOutput: pr, context: "" });
+              setGateEditedOutput(pr);
+              void refreshHumanGateFromServer(runId);
+            }
+          }
           if (
             evt.type === "JOB_STARTED" ||
             evt.type === "JOB_COMPLETED" ||
@@ -618,7 +736,7 @@ export default function RunPage() {
         if (!abortRef.current) void syncFromServer();
       };
     },
-    [clearPoll, fetchAndApplyRunState],
+    [clearPoll, fetchAndApplyRunState, refreshHumanGateFromServer],
   );
 
   const resumeFromFirstIncomplete = useCallback(async () => {
@@ -1031,6 +1149,7 @@ export default function RunPage() {
               onStopStep={(id) => void stopStep(id)}
               resumeCta={
                 activeRunId &&
+                !gatePendingBlocking &&
                 firstIncompleteStepId === stepId &&
                 activeRunStatus !== "completed"
                   ? {
@@ -1044,6 +1163,71 @@ export default function RunPage() {
           ))}
         </ul>
       )}
+
+      {humanGate ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6" role="presentation">
+          <div className="absolute inset-0 bg-black/55 backdrop-blur-[1px]" aria-hidden />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="human-gate-title"
+            className="relative z-10 flex max-h-[min(640px,calc(100vh-3rem))] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-amber-500/35 bg-card shadow-2xl ring-1 ring-amber-500/20"
+          >
+            <div className="border-b border-border bg-amber-500/10 px-5 py-4 dark:bg-amber-500/15">
+              <h2 id="human-gate-title" className="font-heading text-lg font-semibold text-foreground">
+                Human review required
+              </h2>
+              <p className="mt-1 font-mono text-xs text-muted-foreground">
+                Job <span className="text-foreground">{humanGate.jobId}</span> — approve or reject to continue the
+                run.
+              </p>
+            </div>
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
+              <div>
+                <p className="text-xs font-medium text-muted-foreground">Proposed output (edit if needed, then Approve)</p>
+                <textarea
+                  className="mt-2 min-h-[200px] w-full resize-y rounded-xl border border-input bg-muted/40 p-3 font-mono text-xs leading-relaxed text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+                  value={gateEditedOutput}
+                  onChange={(e) => setGateEditedOutput(e.target.value)}
+                  spellCheck={false}
+                  aria-label="Proposed output to approve"
+                />
+              </div>
+              {humanGate.context.trim() ? (
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground">Upstream context</p>
+                  <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap rounded-lg border border-border bg-muted/30 p-3 font-mono text-[11px] text-foreground">
+                    {humanGate.context}
+                  </pre>
+                </div>
+              ) : null}
+              <div>
+                <p className="text-xs font-medium text-muted-foreground">Reject reason (optional)</p>
+                <input
+                  type="text"
+                  className="mt-2 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+                  value={gateRejectReason}
+                  onChange={(e) => setGateRejectReason(e.target.value)}
+                  placeholder="e.g. tone is wrong — try again"
+                />
+              </div>
+              {gateActionError ? (
+                <p className="text-sm text-destructive" role="alert">
+                  {gateActionError}
+                </p>
+              ) : null}
+            </div>
+            <div className="flex flex-shrink-0 flex-wrap items-center justify-end gap-2 border-t border-border bg-muted/20 px-5 py-4">
+              <Button type="button" variant="outline" disabled={gateBusy} onClick={() => void submitGateReject()}>
+                Reject
+              </Button>
+              <Button type="button" disabled={gateBusy} onClick={() => void submitGateApprove()}>
+                {gateBusy ? "Submitting…" : "Approve"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </main>
   );
 }

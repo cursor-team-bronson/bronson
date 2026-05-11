@@ -1,0 +1,34 @@
+# Minimal workflow with a human gate (orchestrator jobs format).
+#
+# Flow: draft → human_review (pauses for approval) → publish
+# When the gate job runs, the UI shows pending approval; use approve/reject
+# on POST /api/runs/:runId/gates/:jobId (see orchestrator routes).
+#
+# Model: omit `model` to use DEFAULT_AGENT_MODEL / CLOD_DEFAULT_MODEL from .env
+
+name: human-gate-demo
+
+jobs:
+  draft:
+    prompt: |
+      You are a concise copywriter. Given no prior context, write exactly two short
+      marketing taglines (one line each) for a fictional app called "Bronson" that
+      orchestrates LLM jobs in a DAG. Output only the two lines, no preamble.
+    gate: auto
+    context_budget: 2000
+
+  human_review:
+    depends_on: [draft]
+    gate: human
+    prompt: |
+      A human must approve or edit the taglines from the previous step before release.
+      When you run after approval, briefly confirm what was approved (one sentence).
+    context_budget: 2000
+
+  publish:
+    depends_on: [human_review]
+    prompt: |
+      Format the approved taglines as a tiny "release notes" blurb: a title line
+      "Release: Bronson taglines" then a bullet list with the two lines.
+    gate: auto
+    context_budget: 2000
