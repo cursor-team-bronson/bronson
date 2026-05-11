@@ -1,9 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
+import { ArrowRight, BookOpen, CircleHelp } from "lucide-react";
 import { useRouter } from "next/navigation";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Separator } from "@/components/ui/separator";
 import {
   dreamStateWorkflowYaml,
   essayWorkflowYaml,
@@ -29,13 +33,15 @@ export default function DagPage() {
   const yamlHelpCloseRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem(WORKFLOW_YAML_STORAGE_KEY);
-      if (saved) setYamlText(saved);
-    } catch {
-      /* ignore */
-    }
-    setHydrated(true);
+    startTransition(() => {
+      try {
+        const saved = localStorage.getItem(WORKFLOW_YAML_STORAGE_KEY);
+        if (saved) setYamlText(saved);
+      } catch {
+        /* ignore */
+      }
+      setHydrated(true);
+    });
   }, []);
 
   useEffect(() => {
@@ -72,15 +78,15 @@ export default function DagPage() {
           ? "Ready to run"
           : "Incomplete";
 
-  const workflowStatusTone = graph.parseError
-    ? "bg-destructive/15 text-destructive border-destructive/25"
+  const workflowStatusBadgeVariant = graph.parseError
+    ? "destructive"
     : hasCycle
-      ? "bg-destructive/15 text-destructive border-destructive/25"
+      ? "destructive"
       : graph.nodes.length === 0
-        ? "bg-muted text-muted-foreground border-border"
+        ? "secondary"
         : canSubmit
-          ? "bg-primary/12 text-primary border-primary/25"
-          : "bg-muted text-muted-foreground border-border";
+          ? "default"
+          : "outline";
 
   useEffect(() => {
     if (!yamlHelpOpen) return;
@@ -100,109 +106,143 @@ export default function DagPage() {
   }, [yamlHelpOpen]);
 
   return (
-    <main className="relative mx-auto flex min-h-0 w-full max-w-7xl flex-1 flex-col gap-8 px-5 py-8 sm:px-8 lg:gap-10 lg:py-12">
-      <header className="flex flex-col gap-4 border-b border-border pb-8 sm:flex-row sm:items-end sm:justify-between">
-        <div className="space-y-2">
-          <h1 className="font-heading text-3xl font-semibold tracking-tight text-foreground sm:text-4xl">
-            Workflow editor
-          </h1>
-          <p className="max-w-xl text-sm leading-relaxed text-muted-foreground">
-            Define steps in YAML, preview the DAG, and validate order before you submit. The same workflow is used on
-            the model runner page.
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            onClick={() => {
-              setYamlText(essayWorkflowYaml);
-              try {
-                localStorage.setItem(WORKFLOW_YAML_STORAGE_KEY, essayWorkflowYaml);
-              } catch {
-                /* ignore */
-              }
-            }}
-          >
-            Load essay test (3 cycles)
-          </Button>
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            onClick={() => {
-              setYamlText(dreamStateWorkflowYaml);
-              try {
-                localStorage.setItem(WORKFLOW_YAML_STORAGE_KEY, dreamStateWorkflowYaml);
-              } catch {
-                /* ignore */
-              }
-            }}
-          >
-            Load dream-state
-          </Button>
-          <div
-            className={`inline-flex w-fit shrink-0 items-center rounded-full border px-3 py-1 text-xs font-medium ${workflowStatusTone}`}
-            role="status"
-            aria-live="polite"
-          >
-            {workflowStatusLabel}
+    <main className="relative mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col gap-10 bg-gradient-to-b from-accent/25 via-background to-background px-4 py-10 sm:px-6 lg:px-8 lg:py-14">
+      <header className="relative overflow-hidden rounded-2xl border border-accent/45 bg-gradient-to-br from-card via-accent/30 to-muted/20 pl-5 pr-6 py-8 shadow-sm ring-1 ring-accent/20 sm:px-8 sm:pl-8">
+        <div
+          className="pointer-events-none absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-primary via-primary/70 to-accent"
+          aria-hidden
+        />
+        <div className="pointer-events-none absolute -right-20 -top-20 size-64 rounded-full bg-primary/[0.07] blur-3xl" aria-hidden />
+        <div className="relative flex flex-col gap-8 lg:flex-row lg:items-end lg:justify-between">
+          <div className="max-w-2xl space-y-4">
+            <Badge
+              variant="outline"
+              className="h-7 rounded-full border-accent/50 bg-accent/50 px-3 font-normal text-accent-foreground"
+            >
+              Bronson · DAG editor
+            </Badge>
+            <div>
+              <h1 className="font-heading text-3xl font-semibold tracking-tight text-foreground sm:text-4xl">
+                Workflow editor
+              </h1>
+              <p className="mt-3 max-w-xl text-sm leading-relaxed text-muted-foreground">
+                Author YAML, validate topology, then submit — the same file powers{" "}
+                <code className="rounded-md border border-accent/30 bg-accent/40 px-1.5 py-0.5 font-mono text-[11px] text-accent-foreground">
+                  /run
+                </code>
+                .
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-shrink-0 flex-wrap items-center gap-2 rounded-2xl border border-accent/50 bg-accent/45 p-2 shadow-inner ring-1 ring-accent/15 dark:bg-accent/20 dark:ring-accent/25">
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              className="gap-1.5 border border-border/60 bg-background/90 shadow-sm"
+              onClick={() => {
+                setYamlText(essayWorkflowYaml);
+                try {
+                  localStorage.setItem(WORKFLOW_YAML_STORAGE_KEY, essayWorkflowYaml);
+                } catch {
+                  /* ignore */
+                }
+              }}
+            >
+              <BookOpen className="size-3.5 opacity-80" aria-hidden />
+              Essay preset
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              className="gap-1.5 border border-border/60 bg-background/90 shadow-sm"
+              onClick={() => {
+                setYamlText(dreamStateWorkflowYaml);
+                try {
+                  localStorage.setItem(WORKFLOW_YAML_STORAGE_KEY, dreamStateWorkflowYaml);
+                } catch {
+                  /* ignore */
+                }
+              }}
+            >
+              <BookOpen className="size-3.5 opacity-80" aria-hidden />
+              Dream-state
+            </Button>
+            <Separator orientation="vertical" className="hidden h-8 bg-accent-foreground/15 sm:block" />
+            <Badge
+              variant={workflowStatusBadgeVariant}
+              className="h-8 shrink-0 px-3 text-xs font-medium"
+              role="status"
+              aria-live="polite"
+            >
+              {workflowStatusLabel}
+            </Badge>
           </div>
         </div>
       </header>
 
-      <div className="grid flex-1 grid-cols-1 gap-6 lg:grid-cols-2 lg:gap-8">
-        <section className="flex min-h-[70vh] flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-sm ring-1 ring-black/5 dark:ring-white/10">
-          <div className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
+      <div className="grid flex-1 grid-cols-1 gap-5 rounded-2xl border border-accent/25 bg-accent/10 p-4 shadow-sm ring-1 ring-accent/10 sm:gap-6 sm:p-5 lg:grid-cols-2 dark:bg-accent/5">
+        <section className="flex min-h-[70vh] flex-col overflow-hidden rounded-2xl border border-accent/40 bg-card py-0 shadow-sm ring-1 ring-accent/10">
+          <div className="flex items-start justify-between gap-3 border-b border-accent/30 bg-accent/25 px-5 py-4">
             <div>
               <h2 className="text-sm font-semibold text-foreground">Workflow YAML</h2>
               <p className="mt-1 text-xs text-muted-foreground">Steps and dependencies drive the preview.</p>
             </div>
-            <button
+            <Button
               type="button"
+              variant="outline"
+              size="icon-sm"
               aria-label="Open YAML reference"
               aria-expanded={yamlHelpOpen}
               aria-controls="yaml-help-dialog"
               onClick={() => setYamlHelpOpen(true)}
               title="YAML help"
-              className="flex size-9 shrink-0 items-center justify-center rounded-full border border-border bg-muted/80 text-sm font-semibold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+              className="shrink-0 border-accent/40 bg-background/90 shadow-sm"
             >
-              ?
-            </button>
+              <CircleHelp className="size-4 text-muted-foreground" aria-hidden />
+            </Button>
           </div>
-          <div className="flex min-h-0 flex-1 flex-col p-4 sm:p-5">
+          <div className="flex min-h-0 flex-1 flex-col bg-accent/5 p-4 sm:p-5 dark:bg-accent/[0.04]">
             <textarea
               aria-label="YAML editor"
               value={yamlText}
               onChange={(event) => setYamlText(event.target.value)}
               spellCheck={false}
-              className="min-h-[60vh] w-full flex-1 resize-none rounded-xl border border-input bg-muted/40 p-4 font-mono text-sm leading-6 text-foreground outline-none transition-shadow placeholder:text-muted-foreground focus:border-ring focus:ring-2 focus:ring-ring/40 dark:bg-muted/25"
+              className="min-h-[60vh] w-full flex-1 resize-none rounded-xl border border-accent/35 bg-background/80 p-4 font-mono text-sm leading-6 text-foreground shadow-inner outline-none transition-[border-color,box-shadow] placeholder:text-muted-foreground focus:border-primary/50 focus:ring-2 focus:ring-primary/20 dark:bg-background/60"
               placeholder={`name: workflow-name\nsteps:\n  - id: step-one`}
             />
           </div>
         </section>
 
-        <section className="relative flex min-h-[70vh] flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-sm ring-1 ring-black/5 dark:ring-white/10">
-          <div className="border-b border-border px-5 py-4">
+        <section className="relative flex min-h-[70vh] flex-col overflow-hidden rounded-2xl border border-accent/40 bg-card py-0 shadow-sm ring-1 ring-accent/10">
+          <div className="border-b border-accent/30 bg-accent/25 px-5 py-4">
             <h2 className="text-sm font-semibold text-foreground">DAG preview</h2>
             <p className="mt-1 text-xs text-muted-foreground">
               Visualization updates as your YAML parses. Cycles block submission.
             </p>
           </div>
-          <div className="relative flex min-h-0 flex-1 flex-col p-4 sm:p-5">
+          <div className="relative flex min-h-0 flex-1 flex-col bg-accent/5 p-4 sm:p-5 dark:bg-accent/[0.04]">
             <div className={hasCycle ? "pointer-events-none select-none blur-sm" : ""}>
               {graph.parseError ? (
-                <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
-                  <p className="font-medium">Could not parse workflow</p>
-                  <p className="mt-2 font-mono text-xs leading-relaxed opacity-95">{graph.parseError}</p>
-                </div>
+                <Alert variant="destructive">
+                  <AlertTitle>Could not parse workflow</AlertTitle>
+                  <AlertDescription className="mt-1 font-mono text-xs leading-relaxed">{graph.parseError}</AlertDescription>
+                </Alert>
               ) : graph.nodes.length === 0 ? (
-                <p className="text-sm text-muted-foreground">
-                  No steps yet. Add a <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">steps</code>{" "}
-                  array with entries that include an{" "}
-                  <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">id</code>.
-                </p>
+                <div className="rounded-2xl border border-dashed border-accent/45 bg-accent/15 px-5 py-10 text-center ring-1 ring-accent/10">
+                  <p className="text-sm text-accent-foreground/90">
+                    No steps yet. Add a{" "}
+                    <code className="rounded border border-accent/30 bg-accent/40 px-1 py-0.5 font-mono text-xs">
+                      steps
+                    </code>{" "}
+                    array with entries that include an{" "}
+                    <code className="rounded border border-accent/30 bg-accent/40 px-1 py-0.5 font-mono text-xs">
+                      id
+                    </code>
+                    .
+                  </p>
+                </div>
               ) : (
                 <div className="flex min-h-[58vh] flex-col gap-4">
                   <p className="text-sm text-muted-foreground">
@@ -211,7 +251,7 @@ export default function DagPage() {
                       {displayNodes.join(" → ")}
                     </span>
                   </p>
-                  <div className="relative flex min-h-[48vh] flex-1 items-center justify-center overflow-hidden rounded-xl border border-border bg-muted/30 p-2 dark:bg-muted/20">
+                  <div className="relative flex min-h-[48vh] flex-1 items-center justify-center overflow-hidden rounded-xl border border-accent/35 bg-accent/20 p-2 ring-1 ring-accent/10 dark:bg-accent/15">
                     <DagPreview nodes={dagNodes} />
                   </div>
                 </div>
@@ -219,24 +259,24 @@ export default function DagPage() {
             </div>
             {hasCycle && (
               <div className="pointer-events-none absolute inset-5 flex items-center justify-center rounded-xl bg-background/55 p-4 backdrop-blur-[2px]">
-                <div className="pointer-events-auto max-w-md rounded-xl border border-destructive/35 bg-card/95 p-5 text-sm text-destructive shadow-lg backdrop-blur-sm">
-                  <p className="font-semibold text-foreground">Cycle detected</p>
-                  <p className="mt-2 break-all font-mono text-xs leading-relaxed">
-                    {graph.cyclePath?.join(" → ")}
-                  </p>
-                  <p className="mt-3 text-xs text-muted-foreground">
-                    Break the loop by changing <code className="font-mono text-foreground">depends_on</code> so no
-                    step eventually depends on itself.
-                  </p>
-                </div>
+                <Alert variant="destructive" className="pointer-events-auto max-w-md shadow-lg backdrop-blur-sm">
+                  <AlertTitle>Cycle detected</AlertTitle>
+                  <AlertDescription className="mt-2 space-y-3">
+                    <p className="break-all font-mono text-xs leading-relaxed">{graph.cyclePath?.join(" → ")}</p>
+                    <p className="text-xs text-muted-foreground">
+                      Break the loop by changing <code className="font-mono text-foreground">depends_on</code> so no
+                      step eventually depends on itself.
+                    </p>
+                  </AlertDescription>
+                </Alert>
               </div>
             )}
           </div>
         </section>
       </div>
 
-      <footer className="flex flex-col gap-3 border-t border-border pt-8 sm:flex-row sm:items-center sm:justify-between">
-        <p className="text-xs text-muted-foreground">
+      <footer className="flex flex-col gap-4 rounded-2xl border border-accent/35 bg-accent/20 px-5 py-5 shadow-sm ring-1 ring-accent/15 sm:flex-row sm:items-center sm:justify-between dark:bg-accent/15">
+        <p className="max-w-prose text-xs leading-relaxed text-accent-foreground/90">
           {canSubmit
             ? "Submit saves this YAML and opens the Model runner (/run) to execute against the orchestrator."
             : graph.parseError
@@ -247,9 +287,11 @@ export default function DagPage() {
                   ? "Define steps or jobs to submit."
                   : "Finish defining a valid DAG to submit."}
         </p>
-        <button
+        <Button
           type="button"
+          size="sm"
           disabled={!canSubmit}
+          className="gap-1.5 self-start shadow-md ring-2 ring-primary/15 sm:self-auto"
           onClick={() => {
             try {
               localStorage.setItem(WORKFLOW_YAML_STORAGE_KEY, yamlText);
@@ -258,10 +300,10 @@ export default function DagPage() {
             }
             router.push("/run");
           }}
-          className="inline-flex items-center justify-center rounded-xl bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground shadow-sm transition-opacity hover:opacity-95 disabled:pointer-events-none disabled:opacity-45"
         >
           Submit workflow
-        </button>
+          <ArrowRight className="size-3.5 opacity-90" aria-hidden />
+        </Button>
       </footer>
 
       {yamlHelpOpen ? (
@@ -280,25 +322,27 @@ export default function DagPage() {
             id="yaml-help-dialog"
             aria-modal="true"
             aria-labelledby="yaml-help-title"
-            className="relative z-10 flex max-h-[min(560px,calc(100vh-4rem))] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-xl"
+            className="relative z-10 flex max-h-[min(560px,calc(100vh-4rem))] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-accent/45 bg-card shadow-xl ring-1 ring-accent/20"
           >
-            <div className="flex shrink-0 items-start justify-between gap-3 border-b border-border px-5 py-4">
+            <div className="flex shrink-0 items-start justify-between gap-3 border-b border-accent/30 bg-accent/20 px-5 py-4 dark:bg-accent/15">
               <div>
                 <h2 id="yaml-help-title" className="font-heading text-lg font-semibold text-foreground">
                   YAML reference
                 </h2>
                 <p className="mt-1 text-xs text-muted-foreground">How Bronson reads your workflow file.</p>
               </div>
-              <button
+              <Button
                 ref={yamlHelpCloseRef}
                 type="button"
+                variant="outline"
+                size="sm"
                 onClick={() => setYamlHelpOpen(false)}
-                className="rounded-lg border border-border bg-muted/60 px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
+                className="border-accent/40 bg-background/90 shadow-sm"
               >
                 Close
-              </button>
+              </Button>
             </div>
-            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4 text-sm leading-relaxed">
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto bg-accent/5 px-5 py-4 text-sm leading-relaxed dark:bg-accent/[0.04]">
               <div>
                 <p className="font-medium text-foreground">Structure</p>
                 <ul className="mt-2 list-disc space-y-1 pl-4 text-muted-foreground">
@@ -343,7 +387,7 @@ export default function DagPage() {
               </div>
               <div>
                 <p className="font-medium text-foreground">Example</p>
-                <pre className="mt-2 overflow-x-auto rounded-xl border border-border bg-muted/50 p-4 font-mono text-xs text-foreground">
+                <pre className="mt-2 overflow-x-auto rounded-xl border border-accent/35 bg-accent/15 p-4 font-mono text-xs text-foreground ring-1 ring-accent/10 dark:bg-accent/10">
                   {yamlHelpExample}
                 </pre>
               </div>
