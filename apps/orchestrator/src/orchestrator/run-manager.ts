@@ -639,6 +639,7 @@ async function executeJob(run: RunState, config: WorkflowConfig, jobId: string):
         });
         await persistJobRow(run.runId, { ...jobState });
         await persistWorkflowRunStatus(run.runId, run.status);
+        if (killed.has(run.runId)) return;
 
         try {
           await budgetTracker.waitForFunding(run.runId, jobId);

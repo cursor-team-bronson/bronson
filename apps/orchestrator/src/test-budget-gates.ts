@@ -287,6 +287,23 @@ await test("cancelFunding after topUp race — cancel is a no-op", async () => {
   await Promise.race([budgetTracker.waitForFunding("r14", "j1"), timeout]);
 });
 
+await test("cancelFunding before waitForFunding — waitForFunding rejects immediately (kill race)", async () => {
+  budgetTracker.register("r16", "j1", 0.01);
+  try { await budgetTracker.deduct("r16", "j1", 0.02); } catch {}
+
+  // Cancel arrives BEFORE waitForFunding is called (the race window during persist awaits)
+  budgetTracker.cancelFunding("r16", "j1", "Run killed by user");
+
+  // waitForFunding should reject immediately, not hang for 1h
+  try {
+    await budgetTracker.waitForFunding("r16", "j1");
+    assert.fail("Should have rejected");
+  } catch (e) {
+    assert.ok(e instanceof Error);
+    assert.ok((e as Error).message.includes("killed"));
+  }
+});
+
 await test("deduct with zero cost does not throw", async () => {
   budgetTracker.register("r15", "j1", 1.0);
   await budgetTracker.deduct("r15", "j1", 0);
