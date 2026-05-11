@@ -1,13 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CalendarClock, ChevronDown } from "lucide-react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { BookOpen, CalendarClock, ChevronDown, ExternalLink, Play, RefreshCw, Square } from "lucide-react";
 import type { JobState, JobStatus, RunState, RunStatus } from "@bronson/types";
 
 function jobStepNeedsWork(status: JobStatus | undefined): boolean {
   if (status == null) return true;
   return status !== "completed" && status !== "skipped";
 }
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -18,6 +20,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Separator } from "@/components/ui/separator";
 import {
   BRONSON_WORKFLOW_SCHEDULE_KEY,
   dreamStateWorkflowYaml,
@@ -86,30 +89,48 @@ function mapJobStatus(s: JobStatus): StepStatus {
   }
 }
 
-function StatusLight({ status }: { status: StepStatus }) {
+function StepStatusBadge({ status }: { status: StepStatus }) {
   const label =
     status === "idle"
       ? "Pending"
       : status === "running"
         ? "Running"
         : status === "ok"
-          ? "Completed"
-          : "Error";
+          ? "Done"
+          : "Failed";
 
-  const color =
-    status === "idle"
-      ? "bg-zinc-300 dark:bg-zinc-600"
-      : status === "running"
-        ? "bg-amber-400 shadow-[0_0_10px_rgba(251,191,36,0.6)]"
-        : status === "ok"
-          ? "bg-emerald-500"
-          : "bg-red-500";
+  if (status === "running") {
+    return (
+      <Badge
+        variant="outline"
+        className="h-6 gap-1.5 border-amber-500/40 bg-amber-500/10 px-2.5 font-medium text-amber-950 dark:text-amber-100"
+      >
+        <span className="relative flex size-2">
+          <span className="absolute inline-flex size-full animate-ping rounded-full bg-amber-400 opacity-60" />
+          <span className="relative inline-flex size-2 rounded-full bg-amber-500" />
+        </span>
+        {label}
+      </Badge>
+    );
+  }
+
+  if (status === "ok") {
+    return (
+      <Badge
+        variant="outline"
+        className="h-6 border-emerald-500/35 bg-emerald-500/10 px-2.5 font-medium text-emerald-950 dark:text-emerald-100"
+      >
+        {label}
+      </Badge>
+    );
+  }
+
+  const variant = status === "idle" ? "secondary" : ("destructive" as const);
 
   return (
-    <div className="flex items-center gap-2">
-      <span className={`size-2.5 shrink-0 rounded-full ${color}`} title={label} aria-hidden />
-      <span className="text-xs font-medium text-muted-foreground">{label}</span>
-    </div>
+    <Badge variant={variant} className="h-6 px-2.5 font-medium">
+      {label}
+    </Badge>
   );
 }
 
@@ -188,18 +209,18 @@ function ModelRunnerStepCard({
 
   return (
     <li>
-      <Card className="gap-0 py-0">
+      <Card className="gap-0 overflow-hidden border-accent/40 py-0 shadow-sm ring-1 ring-accent/10 transition-shadow hover:border-accent/55 hover:shadow-md">
         <Collapsible defaultOpen={Boolean(jobError)} className="group">
-          <div className="flex items-stretch gap-2 border-b border-border/60">
+          <div className="flex items-stretch gap-0 border-b border-accent/30 bg-accent/25">
             <CollapsibleTrigger asChild>
               <button
                 type="button"
-                className="hover:bg-muted/30 flex min-w-0 flex-1 flex-col gap-3 px-4 py-4 text-left transition-colors sm:flex-row sm:items-center sm:justify-between sm:gap-4"
+                className="hover:bg-accent/35 flex min-w-0 flex-1 flex-col gap-3 px-4 py-4 text-left transition-colors sm:flex-row sm:items-center sm:justify-between sm:gap-4"
               >
                 <div className="min-w-0 flex-1 space-y-2">
                   <div className="flex flex-wrap items-center gap-2">
-                    <p className="font-mono text-sm font-semibold text-foreground">{stepId}</p>
-                    <StatusLight status={status} />
+                    <p className="font-mono text-sm font-semibold tracking-tight text-foreground">{stepId}</p>
+                    <StepStatusBadge status={status} />
                   </div>
                   {stepType ? (
                     <p className="text-xs text-muted-foreground">
@@ -217,11 +238,11 @@ function ModelRunnerStepCard({
                     </span>
                   </div>
                 </div>
-                <ChevronDown className="text-muted-foreground size-4 shrink-0 self-end transition-transform duration-200 group-data-[state=open]:rotate-180 sm:self-center" />
+                <ChevronDown className="text-muted-foreground/80 size-4 shrink-0 self-end transition-transform duration-300 ease-out group-data-[state=open]:rotate-180 sm:self-center" />
               </button>
             </CollapsibleTrigger>
             {resumeCta || showStop ? (
-              <div className="flex shrink-0 flex-col justify-center gap-2 pr-3">
+              <div className="flex shrink-0 flex-col justify-center gap-2 border-l border-accent/35 bg-accent/40 px-3 py-3 dark:bg-accent/30">
                 {resumeCta ? (
                   <Button
                     type="button"
@@ -259,7 +280,7 @@ function ModelRunnerStepCard({
             ) : null}
           </div>
           <CollapsibleContent>
-            <CardContent className="border-border space-y-4 border-t pt-4 pb-4">
+            <CardContent className="space-y-4 border-t border-accent/25 bg-accent/15 pt-4 pb-5 dark:bg-accent/10">
               <p className="text-xs text-muted-foreground">
                 depends on:{" "}
                 <span className="font-mono text-foreground">{deps.length ? deps.join(", ") : "—"}</span>
@@ -312,7 +333,8 @@ function ModelRunnerStepCard({
 }
 
 export default function RunPage() {
-  const [yamlText, setYamlText] = useState(() => readStoredWorkflowYaml());
+  /** Match SSR (no localStorage): hydrate from storage once on the client to avoid step-order mismatches. */
+  const [yamlText, setYamlText] = useState(() => starterYaml);
   const [statusByStep, setStatusByStep] = useState<Record<string, StepStatus>>({});
   const [isRunning, setIsRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
@@ -329,6 +351,8 @@ export default function RunPage() {
   const eventSourceRef = useRef<EventSource | null>(null);
   /** Skip clearing job details on the first `yamlText` effect so we can merge a persisted last run. */
   const skipYamlResetOnceRef = useRef(true);
+  /** Next yaml change is the one-shot sync from localStorage after mount — do not clear run state. */
+  const pendingStorageYamlRef = useRef(false);
   /** Fallback while SSE can drop (proxy timeouts); cleared when run reaches a terminal state or Stop. */
   /** Browser timer id (`window.setInterval`); typed as number to avoid Node DOM global conflicts in tsc. */
   const pollRef = useRef<number | null>(null);
@@ -455,25 +479,38 @@ export default function RunPage() {
   }, [activeRunId, activeRunStatus, stepOrderForResume, jobDetails]);
 
   useEffect(() => {
-    const g = parseDag(yamlText);
-    const next: Record<string, StepStatus> = {};
-    for (const id of g.nodes) next[id] = "idle";
-    setStatusByStep(next);
-    if (skipYamlResetOnceRef.current) {
-      skipYamlResetOnceRef.current = false;
-      return;
-    }
-    setJobDetails({});
-    setServerStepOrder(null);
-    setActiveRunId(null);
-    setActiveRunStatus(null);
-    setJobErrors({});
-    try {
-      localStorage.removeItem(LAST_MODEL_RUN_ID_STORAGE_KEY);
-    } catch {
-      /* ignore */
-    }
+    startTransition(() => {
+      const g = parseDag(yamlText);
+      const next: Record<string, StepStatus> = {};
+      for (const id of g.nodes) next[id] = "idle";
+      setStatusByStep(next);
+      if (skipYamlResetOnceRef.current) {
+        skipYamlResetOnceRef.current = false;
+        return;
+      }
+      if (pendingStorageYamlRef.current) {
+        pendingStorageYamlRef.current = false;
+        return;
+      }
+      setJobDetails({});
+      setServerStepOrder(null);
+      setActiveRunId(null);
+      setActiveRunStatus(null);
+      setJobErrors({});
+      try {
+        localStorage.removeItem(LAST_MODEL_RUN_ID_STORAGE_KEY);
+      } catch {
+        /* ignore */
+      }
+    });
   }, [yamlText]);
+
+  useEffect(() => {
+    startTransition(() => {
+      pendingStorageYamlRef.current = true;
+      setYamlText(readStoredWorkflowYaml());
+    });
+  }, []);
 
   useEffect(() => {
     if (!isRunning) return;
@@ -669,7 +706,7 @@ export default function RunPage() {
     } catch {
       return false;
     }
-  }, [activeRunId, activeRunStatus, yamlText]);
+  }, [activeRunId, activeRunStatus]);
 
   const run = useCallback(async () => {
     if (isRunning) return;
@@ -689,9 +726,23 @@ export default function RunPage() {
 
     try {
       if (resumeRunId) {
-        const cont = await fetch(`/api/runs/${encodeURIComponent(resumeRunId)}/continue`, {
-          method: "POST",
-        });
+        let cont: Response;
+        try {
+          cont = await fetch(`/api/runs/${encodeURIComponent(resumeRunId)}/continue`, {
+            method: "POST",
+          });
+        } catch {
+          try {
+            localStorage.removeItem(LAST_MODEL_RUN_ID_STORAGE_KEY);
+          } catch {
+            /* ignore */
+          }
+          setIsRunning(false);
+          setRunError(
+            `Could not reach the server to resume run ${resumeRunId}. The saved run id was cleared. Check the orchestrator and ORCHESTRATOR_URL, then use Run to start fresh or paste a run id.`,
+          );
+          return;
+        }
         if (cont.ok) {
           const started = (await cont.json()) as RunState;
           const runId = started.runId;
@@ -788,235 +839,212 @@ export default function RunPage() {
   }, [beginWatchingRun, graph.nodes, isRunning, runnable, yamlText]);
 
   return (
-    <main className="mx-auto flex min-h-0 w-full max-w-7xl flex-1 flex-col gap-8 px-5 py-8 sm:px-8 lg:py-12">
-      <header className="flex flex-col gap-4 border-b border-border pb-6 sm:flex-row sm:items-end sm:justify-between">
-        <div className="space-y-2">
-          <h1 className="font-heading text-3xl font-semibold tracking-tight text-foreground sm:text-4xl">
-            Model runner
-          </h1>
-          <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground">
-            Posts this workflow to the Bronson orchestrator (<code className="rounded bg-muted px-1 py-0.5 text-xs">POST /api/runs</code>
-            ), which runs jobs through CLōD in DAG waves. Use <strong className="font-medium text-foreground">Load essay test</strong> for the 3-cycle writer/reviewer
-            flow (requires <code className="text-xs">TOOL_SHELL_CWD</code> and either <code className="text-xs">ALLOW_SHELL_TOOL=true</code> or{" "}
-            <code className="text-xs">ALLOW_WORKSPACE_WRITE=true</code> — see <code className="text-xs">examples/essay-write-review-3cycles.yaml</code>). Or use{" "}
-            <strong className="font-medium text-foreground">jobs:</strong> / <strong className="font-medium text-foreground">steps:</strong> from the DAG editor.
-            Orchestrator on port 3001; set <code className="text-xs">ORCHESTRATOR_URL</code> for the web app if needed.
-          </p>
-        </div>
-        <div className="flex min-w-0 flex-1 flex-col items-stretch gap-4 sm:max-w-xl sm:items-end">
-          <div className="flex flex-wrap items-center justify-end gap-2">
-            <Button type="button" variant="secondary" size="sm" onClick={loadEssayPreset} disabled={isRunning}>
-              Load essay test (3 cycles)
-            </Button>
-            <Button type="button" variant="secondary" size="sm" onClick={loadDreamPreset} disabled={isRunning}>
-              Load dream-state
-            </Button>
-            <Button type="button" variant="outline" size="sm" onClick={loadFromStorage} disabled={isRunning}>
-              Reload from editor
-            </Button>
-            <Button type="button" variant="destructive" size="sm" onClick={stop} disabled={!isRunning}>
-              Stop listening
-            </Button>
-            <Button type="button" onClick={() => void run()} disabled={isRunning || (!runnable && !mayContinuePersistedRun)}>
-              Run
-            </Button>
+    <main className="mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col gap-10 bg-gradient-to-b from-accent/25 via-background to-background px-4 py-10 sm:px-6 lg:px-8 lg:py-14">
+      <header className="relative overflow-hidden rounded-2xl border border-accent/45 bg-gradient-to-br from-card via-accent/30 to-muted/20 pl-5 pr-6 py-8 shadow-sm ring-1 ring-accent/20 sm:px-8 sm:pl-8">
+        <div
+          className="pointer-events-none absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-primary via-primary/70 to-accent"
+          aria-hidden
+        />
+        <div className="pointer-events-none absolute -right-20 -top-20 size-64 rounded-full bg-primary/[0.07] blur-3xl" aria-hidden />
+        <div className="relative flex flex-col gap-8 lg:flex-row lg:items-end lg:justify-between">
+          <div className="max-w-2xl space-y-4">
+            <Badge
+              variant="outline"
+              className="h-7 rounded-full border-accent/50 bg-accent/50 px-3 font-normal text-accent-foreground"
+            >
+              Bronson · CLōD DAG
+            </Badge>
+            <div>
+              <h1 className="font-heading text-3xl font-semibold tracking-tight text-foreground sm:text-4xl">
+                Model runner
+              </h1>
+              <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
+                Ship YAML to{" "}
+                <code className="rounded-md border border-accent/30 bg-accent/40 px-1.5 py-0.5 font-mono text-[11px] text-accent-foreground">
+                  POST /api/runs
+                </code>{" "}
+                and watch jobs execute in waves. <span className="text-foreground/90">Essay preset</span> runs three writer/reviewer cycles
+                (orchestrator needs <code className="font-mono text-[11px]">ALLOW_SHELL_TOOL</code> +{" "}
+                <code className="font-mono text-[11px]">TOOL_SHELL_CWD</code>). Sync steps from the DAG editor or{" "}
+                <code className="font-mono text-[11px]">examples/essay-write-review-3cycles.yaml</code>. Default orchestrator:{" "}
+                <code className="font-mono text-[11px]">3001</code> — override with <code className="font-mono text-[11px]">ORCHESTRATOR_URL</code>.
+              </p>
+            </div>
           </div>
-          <Card size="sm" className="w-full max-w-sm border-border bg-muted/15 shadow-sm">
-            <CardHeader className="gap-1 pb-2">
-              <CardTitle className="flex items-center gap-2 text-sm font-semibold">
-                <CalendarClock className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-                Schedule
-              </CardTitle>
-              <CardDescription className="text-[11px] leading-snug">
-                Stored locally as <code className="rounded bg-muted px-1 font-mono">{BRONSON_WORKFLOW_SCHEDULE_KEY}</code>. Point cron / CI at{" "}
-                <code className="rounded bg-muted px-1 text-[11px]">POST /api/runs</code>.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-3 pt-0">
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="workflow-schedule" className="text-xs">
-                    Cadence
-                  </Label>
-                  <Select
-                    value={scheduleCadence}
-                    onValueChange={(v) => setScheduleCadence(v as ScheduleCadence)}
-                    disabled={isRunning}
-                  >
-                    <SelectTrigger id="workflow-schedule" size="sm" className="w-full">
-                      <SelectValue placeholder="Cadence" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="manual">Manual</SelectItem>
-                      <SelectItem value="hourly">Hourly</SelectItem>
-                      <SelectItem value="daily">Daily</SelectItem>
-                      <SelectItem value="weekly">Weekly (Sun)</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="workflow-schedule-time" className="text-xs">
-                    Time
-                  </Label>
-                  <Input
-                    id="workflow-schedule-time"
-                    type="time"
-                    value={scheduleTime}
-                    onChange={(e) => setScheduleTime(e.target.value)}
-                    disabled={isRunning || scheduleCadence === "manual"}
-                    className="h-8 text-xs"
-                  />
-                </div>
-              </div>
-              {scheduleCadence !== "manual" && scheduleHint ? (
-                <p className="text-[11px] text-muted-foreground">{scheduleHint}</p>
-              ) : null}
-              {scheduleCadence !== "manual" ? (
-                <p className="font-mono text-[11px] text-muted-foreground">
-                  cron <span className="text-foreground">{cronExpressionForSchedule(scheduleCadence, scheduleTime)}</span>
-                </p>
-              ) : null}
-            </CardContent>
-            <CardFooter className="flex flex-wrap items-center gap-2 border-t border-border/60 pt-3">
-              <Button type="button" size="sm" onClick={persistSchedule} disabled={isRunning}>
-                Save schedule
+          <div className="flex w-full min-w-0 flex-col gap-4 lg:max-w-xl lg:items-end">
+            <div className="flex flex-shrink-0 flex-wrap items-center gap-2 rounded-2xl border border-accent/50 bg-accent/45 p-2 shadow-inner ring-1 ring-accent/15 dark:bg-accent/20 dark:ring-accent/25">
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                className="gap-1.5 border border-border/60 bg-background/90 shadow-sm"
+                onClick={loadEssayPreset}
+                disabled={isRunning}
+              >
+                <BookOpen className="size-3.5 opacity-80" aria-hidden />
+                Essay preset
               </Button>
-              {scheduleCadence !== "manual" ? (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    setScheduleCadence("manual");
-                    setScheduleTime("09:00");
-                    try {
-                      localStorage.removeItem(BRONSON_WORKFLOW_SCHEDULE_KEY);
-                      setScheduleSavedAt(null);
-                    } catch {
-                      /* ignore */
-                    }
-                  }}
-                  disabled={isRunning}
-                >
-                  Clear
-                </Button>
-              ) : null}
-              {scheduleCadence !== "manual" && scheduleSavedAt ? (
-                <p className="w-full text-[11px] text-muted-foreground">
-                  <span className="font-mono font-medium text-foreground">{scheduleCadence}</span> ·{" "}
-                  <span className="font-mono">{scheduleTime}</span> · saved <span className="font-mono">{scheduleSavedAt}</span>
-                </p>
-              ) : null}
-            </CardFooter>
-          </Card>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                className="gap-1.5 border border-border/60 bg-background/90 shadow-sm"
+                onClick={loadDreamPreset}
+                disabled={isRunning}
+              >
+                <BookOpen className="size-3.5 opacity-80" aria-hidden />
+                Dream-state
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="gap-1.5 border-border/70 bg-background/90 shadow-sm"
+                onClick={loadFromStorage}
+                disabled={isRunning}
+              >
+                <RefreshCw className="size-3.5 opacity-80" aria-hidden />
+                Reload YAML
+              </Button>
+              <Separator orientation="vertical" className="hidden h-8 bg-accent-foreground/15 sm:block" />
+              <Button
+                type="button"
+                variant="destructive"
+                size="sm"
+                className="gap-1.5 shadow-sm"
+                onClick={stop}
+                disabled={!isRunning}
+              >
+                <Square className="size-3.5 opacity-80" aria-hidden />
+                Stop
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                className="gap-1.5 shadow-md ring-2 ring-primary/15"
+                onClick={() => void run()}
+                disabled={isRunning || (!runnable && !mayContinuePersistedRun)}
+              >
+                <Play className="size-3.5 opacity-90" aria-hidden />
+                Run
+              </Button>
+            </div>
+          </div>
         </div>
       </header>
 
-      {runError ? (
-        <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
-          <p className="font-medium">Run request failed</p>
-          <p className="mt-2 font-mono text-xs">{runError}</p>
-        </div>
-      ) : null}
+      <div className="flex flex-col gap-6 rounded-2xl border border-accent/25 bg-accent/10 p-4 shadow-sm ring-1 ring-accent/10 sm:p-5 dark:bg-accent/5">
+        {runError ? (
+          <Alert variant="destructive">
+            <AlertTitle>Run request failed</AlertTitle>
+            <AlertDescription className="mt-1 font-mono text-xs leading-relaxed">{runError}</AlertDescription>
+          </Alert>
+        ) : null}
 
-      {activeRunId ? (
-        <div className="rounded-xl border border-border bg-muted/30 p-4 text-sm">
-          <p className="font-medium text-foreground">Last run</p>
-          <p className="mt-1 break-all font-mono text-xs text-muted-foreground">{activeRunId}</p>
-          <p className="mt-2 text-xs text-muted-foreground">
-            Orchestrator status:{" "}
-            <span className="font-medium text-foreground">{activeRunStatus ?? "—"}</span>
-          </p>
-          <a
-            className="mt-3 inline-flex text-xs font-medium text-primary underline underline-offset-2"
-            href={`/api/runs/${activeRunId}/events/history`}
-            target="_blank"
-            rel="noreferrer"
-          >
-            Open full event log (JSON)
-          </a>
-        </div>
-      ) : null}
+        {activeRunId ? (
+          <Alert className="border-accent/50 bg-accent/35 shadow-sm ring-1 ring-accent/20 dark:bg-accent/25">
+            <AlertTitle className="flex flex-wrap items-center gap-2">
+              Active run
+              {activeRunStatus ? (
+                <Badge variant="secondary" className="font-mono text-[10px] uppercase tracking-wide">
+                  {activeRunStatus}
+                </Badge>
+              ) : null}
+            </AlertTitle>
+            <AlertDescription className="mt-2 space-y-3">
+              <p className="break-all font-mono text-xs text-muted-foreground">{activeRunId}</p>
+              <Button variant="link" size="sm" className="h-auto p-0 text-xs font-medium" asChild>
+                <a href={`/api/runs/${activeRunId}/events/history`} target="_blank" rel="noreferrer">
+                  Event log (JSON)
+                  <ExternalLink className="ml-1 size-3.5 opacity-70" aria-hidden />
+                </a>
+              </Button>
+            </AlertDescription>
+          </Alert>
+        ) : null}
 
-      {(Object.keys(jobErrors).length > 0 || activeRunStatus === "failed") && (
-        <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-sm">
-          <p className="font-medium text-destructive">
-            {Object.keys(jobErrors).length > 0 ? "Job error details" : "Run ended as failed"}
-          </p>
-          {Object.keys(jobErrors).length === 0 && activeRunStatus === "failed" ? (
-            <p className="mt-2 text-xs text-muted-foreground">
-              No per-job message returned — use the event log link above or check the orchestrator terminal.
-            </p>
-          ) : (
-            <ul className="mt-3 space-y-3">
-              {Object.entries(jobErrors).map(([jid, msg]) => (
-                <li key={jid}>
-                  <span className="font-mono text-xs font-semibold text-foreground">{jid}</span>
-                  <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-background/80 p-3 font-mono text-[11px] text-destructive ring-1 ring-destructive/20">
-                    {msg}
-                  </pre>
-                </li>
-              ))}
-            </ul>
-          )}
-          <div className="mt-4 border-t border-destructive/20 pt-4 text-xs text-muted-foreground">
-            <p className="font-medium text-foreground">Typical fixes</p>
-            <ul className="mt-2 list-disc space-y-1 pl-4">
-              <li>
-                <code className="rounded bg-muted px-1">Refusing to start shell-capable job</code> /{" "}
-                <code className="rounded bg-muted px-1">ALLOW_SHELL_TOOL</code>: set{" "}
-                <code className="rounded bg-muted px-1">ALLOW_SHELL_TOOL=true</code> in{" "}
-                <code className="rounded bg-muted px-1">apps/orchestrator/.env</code>, restart the orchestrator, and
-                set <code className="rounded bg-muted px-1">TOOL_SHELL_CWD</code> to your essay workspace (preset uses{" "}
-                <code className="rounded bg-muted px-1">essay-draft.txt</code> relative to that folder).
-              </li>
-              <li>
-                CLōD HTTP 403/401: check <code className="rounded bg-muted px-1">CLOD_API_KEY</code>,{" "}
-                <code className="rounded bg-muted px-1">CLOD_BASE_URL</code>, and{" "}
-                <code className="rounded bg-muted px-1">DEFAULT_AGENT_MODEL</code> in{" "}
-                <code className="rounded bg-muted px-1">apps/orchestrator/.env</code>.
-              </li>
-              <li>
-                Essay preset: set <code className="rounded bg-muted px-1">TOOL_SHELL_CWD</code> and{" "}
-                <code className="rounded bg-muted px-1">ALLOW_SHELL_TOOL=true</code> (or{" "}
-                <code className="rounded bg-muted px-1">ALLOW_WORKSPACE_WRITE=true</code> without shell). Writers use{" "}
-                <code className="rounded bg-muted px-1">workspace_write</code> — no shell quoting. For raw shell jobs, relax{" "}
-                <code className="rounded bg-muted px-1">TOOL_SHELL_ALLOWLIST_REGEX</code> if commands are blocked.
-              </li>
-              <li>
-                Orchestrator URL: default web proxy is port 3001; if the orchestrator bound another port, set web{" "}
-                <code className="rounded bg-muted px-1">ORCHESTRATOR_URL</code> (see orchestrator startup log).
-              </li>
-              <li>
-                Live UI updates use SSE plus a 4s poll until the run finishes — refresh if something looks stuck with long shell/tool loops (
-                <code className="rounded bg-muted px-1">tool_rounds_max</code>).
-              </li>
-              <li>
-                Dream-state: scans may need higher <code className="rounded bg-muted px-1">tool_rounds_max</code> on Windows;{" "}
-                <code className="rounded bg-muted px-1">emit_artifacts</code> uses shell + Node stdin only (no{" "}
-                <code className="rounded bg-muted px-1">workspace_write</code>). If{" "}
-                <code className="rounded bg-muted px-1">ALLOW_WORKSPACE_WRITE=false</code>, other presets may still need{" "}
-                <code className="rounded bg-muted px-1">true</code>.
-              </li>
-            </ul>
+        {(Object.keys(jobErrors).length > 0 || activeRunStatus === "failed") && (
+          <Alert variant="destructive">
+            <AlertTitle>{Object.keys(jobErrors).length > 0 ? "Job errors" : "Run failed"}</AlertTitle>
+            <AlertDescription className="mt-2 space-y-4">
+              {Object.keys(jobErrors).length === 0 && activeRunStatus === "failed" ? (
+                <p className="text-xs text-destructive/90">
+                  No per-job message returned — open the event log or check the orchestrator terminal.
+                </p>
+              ) : (
+                <ul className="divide-y divide-destructive/15 space-y-0">
+                  {Object.entries(jobErrors).map(([jid, msg]) => (
+                    <li key={jid} className="pt-4 first:pt-0">
+                      <Badge variant="outline" className="mb-2 font-mono text-xs">
+                        {jid}
+                      </Badge>
+                      <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-xl border border-destructive/25 bg-background/60 p-3 font-mono text-[11px] leading-relaxed text-destructive">
+                        {msg}
+                      </pre>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="rounded-xl border border-destructive/20 bg-destructive/5 px-3 py-3">
+                <p className="text-xs font-medium text-foreground">Typical fixes</p>
+                <ul className="mt-2 list-disc space-y-1.5 pl-4 text-xs text-muted-foreground">
+                  <li>
+                    <code className="rounded bg-background/80 px-1">Refusing to start shell-capable job</code> /{" "}
+                    <code className="rounded bg-background/80 px-1">ALLOW_SHELL_TOOL</code>: set{" "}
+                    <code className="rounded bg-background/80 px-1">ALLOW_SHELL_TOOL=true</code> in{" "}
+                    <code className="rounded bg-background/80 px-1">apps/orchestrator/.env</code>, restart the orchestrator, and set{" "}
+                    <code className="rounded bg-background/80 px-1">TOOL_SHELL_CWD</code> to your essay workspace (preset uses{" "}
+                    <code className="rounded bg-background/80 px-1">essay-draft.txt</code> relative to that folder).
+                  </li>
+                  <li>
+                    CLōD HTTP 403/401: check <code className="rounded bg-background/80 px-1">CLOD_API_KEY</code>,{" "}
+                    <code className="rounded bg-background/80 px-1">CLOD_BASE_URL</code>, and{" "}
+                    <code className="rounded bg-background/80 px-1">DEFAULT_AGENT_MODEL</code> in{" "}
+                    <code className="rounded bg-background/80 px-1">apps/orchestrator/.env</code>.
+                  </li>
+                  <li>
+                    Essay preset: set <code className="rounded bg-background/80 px-1">TOOL_SHELL_CWD</code> and{" "}
+                    <code className="rounded bg-background/80 px-1">ALLOW_SHELL_TOOL=true</code> (or{" "}
+                    <code className="rounded bg-background/80 px-1">ALLOW_WORKSPACE_WRITE=true</code> without shell). Writers use{" "}
+                    <code className="rounded bg-background/80 px-1">workspace_write</code> — no shell quoting. For raw shell jobs, relax{" "}
+                    <code className="rounded bg-background/80 px-1">TOOL_SHELL_ALLOWLIST_REGEX</code> if commands are blocked.
+                  </li>
+                  <li>
+                    Web proxy: <code className="rounded bg-background/80 px-1">ORCHESTRATOR_URL</code> if the orchestrator is not on port 3001.
+                  </li>
+                  <li>
+                    Live UI uses SSE plus a 4s poll until the run finishes — raise{" "}
+                    <code className="rounded bg-background/80 px-1">tool_rounds_max</code> for long shell/tool loops.
+                  </li>
+                  <li>
+                    Dream-state: scans may need higher <code className="rounded bg-background/80 px-1">tool_rounds_max</code> on Windows;{" "}
+                    <code className="rounded bg-background/80 px-1">emit_artifacts</code> uses shell + Node stdin only (no{" "}
+                    <code className="rounded bg-background/80 px-1">workspace_write</code>). If{" "}
+                    <code className="rounded bg-background/80 px-1">ALLOW_WORKSPACE_WRITE=false</code>, other presets may still need{" "}
+                    <code className="rounded bg-background/80 px-1">true</code>.
+                  </li>
+                </ul>
+              </div>
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {graph.parseError ? (
+          <Alert variant="destructive">
+            <AlertTitle>Invalid workflow YAML</AlertTitle>
+            <AlertDescription className="mt-1 font-mono text-xs">{graph.parseError}</AlertDescription>
+          </Alert>
+        ) : hasCycle ? (
+          <Alert variant="destructive">
+            <AlertTitle>Cycle in graph</AlertTitle>
+            <AlertDescription className="mt-1 break-all font-mono text-xs">{graph.cyclePath?.join(" → ")}</AlertDescription>
+          </Alert>
+        ) : graph.nodes.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-accent/45 bg-accent/20 px-6 py-12 text-center ring-1 ring-accent/15">
+            <p className="text-sm text-accent-foreground/90">No steps in this workflow. Add steps in the DAG editor.</p>
           </div>
-        </div>
-      )}
-
-      {graph.parseError ? (
-        <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
-          <p className="font-medium">Invalid workflow YAML</p>
-          <p className="mt-2 font-mono text-xs">{graph.parseError}</p>
-        </div>
-      ) : hasCycle ? (
-        <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
-          <p className="font-medium">Cycle in graph — fix the DAG editor before running.</p>
-          <p className="mt-2 break-all font-mono text-xs">{graph.cyclePath?.join(" → ")}</p>
-        </div>
-      ) : graph.nodes.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No steps defined. Add steps in the DAG editor.</p>
-      ) : (
-        <ul className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        ) : (
+          <ul className="grid grid-cols-1 gap-5 md:grid-cols-2">
           {order.map((stepId) => (
             <ModelRunnerStepCard
               key={stepId}
@@ -1044,6 +1072,7 @@ export default function RunPage() {
           ))}
         </ul>
       )}
+      </div>
     </main>
   );
 }

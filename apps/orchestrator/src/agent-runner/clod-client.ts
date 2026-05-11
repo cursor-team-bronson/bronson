@@ -79,12 +79,17 @@ export async function runAgent(
   upstreamOutputs: Record<string, string>,
 ): Promise<AgentRunResult> {
   const { jobId, jobConfig, priorAttemptErrors, upstreamKind, abortSignal } = options;
-  const contextSection = buildJobContext(upstreamOutputs, jobConfig.context_budget);
-  let userMessage = contextSection
-    ? `${contextSection}\n\n---\n\n${jobConfig.prompt}`
-    : jobConfig.prompt;
-
-  eventLog.append(runId, "JOB_STARTED", jobId);
+  const contextSection = buildJobContext(
+    upstreamOutputs,
+    jobConfig.context_budget,
+    upstreamKind,
+  );
+  const attemptSection =
+    priorAttemptErrors && priorAttemptErrors.length > 0
+      ? `${formatPriorAttempts(priorAttemptErrors)}\n\n---\n\n`
+      : "";
+  const body = contextSection ? `${contextSection}\n\n---\n\n${jobConfig.prompt}` : jobConfig.prompt;
+  let userMessage = attemptSection ? `${attemptSection}${body}` : body;
 
   const toolNames = jobConfig.tools ?? [];
   const resolved =
