@@ -41,6 +41,7 @@ function trackRunExecution(runId: string, p: Promise<void>): void {
   runExecutionPromises.set(runId, p);
   void p.finally(() => {
     if (runExecutionPromises.get(runId) === p) runExecutionPromises.delete(runId);
+    killed.delete(runId);
   });
 }
 
@@ -457,6 +458,9 @@ export async function retryJobAndContinue(
   runId: string,
   jobId: string,
 ): Promise<{ ok: true } | { error: string }> {
+  if (killed.has(runId)) {
+    return { error: "Run was killed — cannot retry jobs on a killed run" };
+  }
   if (!isJobPersistenceEnabled()) {
     return {
       error:
@@ -508,11 +512,14 @@ export async function retryJobAndContinue(
     const p = (async () => {
       try {
         await executeJob(runRef, config, jobId);
+        if (killed.has(runId)) return;
         if (runRef.jobs[jobId].status === "completed") {
           await runReadyDependents(runRef, config, jobId);
         }
+        if (killed.has(runId)) return;
         applyRunTerminalState(runRef, config);
       } catch (e) {
+        if (killed.has(runId)) return;
         console.error("[bronson] retryJobAndContinue:", e);
       }
     })();
