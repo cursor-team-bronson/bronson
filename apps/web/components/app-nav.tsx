@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 const links = [
   { href: "/dag", label: "DAG editor" },
   { href: "/run", label: "Model runner" },
+  { href: "/schedule", label: "Schedule" },
 ] as const;
 
 export function AppNav() {

@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import {
+  dreamStateWorkflowYaml,
   essayWorkflowYaml,
   parseDag,
   starterYaml,
@@ -150,6 +151,23 @@ export default function DagPage() {
             >
               <BookOpen className="size-3.5 opacity-80" aria-hidden />
               Essay preset
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              className="gap-1.5 border border-border/60 bg-background/90 shadow-sm"
+              onClick={() => {
+                setYamlText(dreamStateWorkflowYaml);
+                try {
+                  localStorage.setItem(WORKFLOW_YAML_STORAGE_KEY, dreamStateWorkflowYaml);
+                } catch {
+                  /* ignore */
+                }
+              }}
+            >
+              <BookOpen className="size-3.5 opacity-80" aria-hidden />
+              Dream-state
             </Button>
             <Separator orientation="vertical" className="hidden h-8 bg-accent-foreground/15 sm:block" />
             <Badge

@@ -59,7 +59,7 @@ async function resolveWorkflowAndStepIds(
       const stepIdByJobId: Record<string, string> = {};
       let reuseOk = true;
       for (const jobId of Object.keys(config.jobs)) {
-        const row = stepRows.find(r => r.name === jobId);
+        const row = stepRows.find((r: { name: string; id: string; yaml_config: unknown }) => r.name === jobId);
         const wantYaml = yaml.dump(config.jobs[jobId]);
         if (!row || row.yaml_config !== wantYaml) {
           reuseOk = false;
