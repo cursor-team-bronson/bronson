@@ -42,7 +42,13 @@ function trackRunExecution(runId: string, p: Promise<void>): void {
   void p.finally(() => {
     if (runExecutionPromises.get(runId) === p) {
       runExecutionPromises.delete(runId);
-      killed.delete(runId);
+      // Only clear the kill signal if the run reached a terminal state naturally.
+      // If the run was killed (status remains "failed" with killed.has), keep the
+      // signal to prevent retryJobAndContinue from resurrecting it.
+      const run = runs.get(runId);
+      if (run && (run.status === "completed" || run.status === "failed")) {
+        killed.delete(runId);
+      }
     }
   });
 }
