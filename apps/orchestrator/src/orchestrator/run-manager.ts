@@ -258,7 +258,9 @@ export async function continuePersistedRun(runId: string): Promise<RunState | nu
 
     const dag = resolveDAG(config);
     const p = resumeExecuteRun(run, config, dag.executionWaves).catch((err) => {
+      if (killed.has(rid)) return;
       run.status = "failed";
+      run.completedAt = run.completedAt ?? new Date().toISOString();
       appendRunEvent(rid, "RUN_FAILED", undefined, { error: String(err) });
       void persistRunStatus(rid, "failed");
     });
